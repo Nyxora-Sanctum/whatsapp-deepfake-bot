@@ -9,8 +9,7 @@ const path = require("path");
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
-        executablePath:
-            "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+        executablePath: "/usr/bin/google-chrome",
     },
 });
 
