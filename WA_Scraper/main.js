@@ -163,6 +163,7 @@ Just send one of those commands to begin!
 
 // This function runs the Python script to do the face swapping
 // This function runs the Python script to do the face swapping
+// This function runs the Python script to do the face swapping
 async function runPythonScript(
     chatId,
     sourceImagePath,
@@ -170,8 +171,9 @@ async function runPythonScript(
     assetType
 ) {
     return new Promise((resolve, reject) => {
-        // --- CORRECTED: Always use the SAME Python script ---
-        const pythonScriptPath = path.join(__dirname, "DL", "process_image.py"); // Or whatever you named the script file
+        // Define the directory where the Python script and its 'modules' folder are located
+        const scriptDir = path.join(__dirname, "DL"); 
+        const pythonScriptPath = path.join(scriptDir, "process_image.py");
 
         const tempDir = path.join(__dirname, "temp");
         const outputFilename = `output-${Date.now()}.${
@@ -179,8 +181,6 @@ async function runPythonScript(
         }`;
         const outputAssetPath = path.join(tempDir, outputFilename);
 
-        // --- CORRECTED: The arguments are always the same ---
-        // We do not need --frame-processor
         const args = [
             pythonScriptPath,
             "--source",
@@ -195,7 +195,8 @@ async function runPythonScript(
 
         console.log(`Calling Python script with args: ${args.join(" ")}`);
 
-        const pythonProcess = spawn("python", args);
+        // --- THE FIX: Add the 'cwd' option to set the working directory ---
+        const pythonProcess = spawn("python", args, { cwd: scriptDir });
 
         pythonProcess.stdout.on("data", (data) => {
             console.log("Python output:", data.toString().trim());
@@ -219,7 +220,7 @@ async function runPythonScript(
             if (code === 0 && fs.existsSync(outputAssetPath)) {
                 console.log("Python script successful! Output at:", outputAssetPath);
                 try {
-                    await new Promise((resolve) => setTimeout(resolve, 1000)); // Short delay
+                    await new Promise((resolve) => setTimeout(resolve, 1000));
                     const outputMedia = MessageMedia.fromFilePath(outputAssetPath);
                     await client.sendMessage(chatId, outputMedia, {
                         caption: "Here is your generated media!",
