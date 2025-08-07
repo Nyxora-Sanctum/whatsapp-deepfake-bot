@@ -162,6 +162,7 @@ Just send one of those commands to begin!
 });
 
 // This function runs the Python script to do the face swapping
+// This function runs the Python script to do the face swapping
 async function runPythonScript(
     chatId,
     sourceImagePath,
@@ -169,8 +170,8 @@ async function runPythonScript(
     assetType
 ) {
     return new Promise((resolve, reject) => {
-        // Use a relative path from the current main.js file
-        const pythonScriptPath = path.join(__dirname, "DL", "process_image.py");
+        // --- CORRECTED: Always use the SAME Python script ---
+        const pythonScriptPath = path.join(__dirname, "DL", "process_image.py"); // Or whatever you named the script file
 
         const tempDir = path.join(__dirname, "temp");
         const outputFilename = `output-${Date.now()}.${
@@ -178,7 +179,9 @@ async function runPythonScript(
         }`;
         const outputAssetPath = path.join(tempDir, outputFilename);
 
-        const pythonProcess = spawn("python", [
+        // --- CORRECTED: The arguments are always the same ---
+        // We do not need --frame-processor
+        const args = [
             pythonScriptPath,
             "--source",
             sourceImagePath,
@@ -186,77 +189,55 @@ async function runPythonScript(
             targetAssetPath,
             "--output",
             outputAssetPath,
-            "--frame-processor", // <-- ADD THIS LINE
-            "face_swapper", // <-- AND THIS LINE
             "--execution-provider",
             "CPUExecutionProvider",
-        ]);
+        ];
 
+        console.log(`Calling Python script with args: ${args.join(" ")}`);
 
-        // Log any output from the Python script
+        const pythonProcess = spawn("python", args);
+
         pythonProcess.stdout.on("data", (data) => {
             console.log("Python output:", data.toString().trim());
         });
 
-        // Log any errors from the Python script
         pythonProcess.stderr.on("data", (data) => {
             console.error("Python error:", data.toString().trim());
         });
 
-        // When the script finishes, this part will run
         pythonProcess.on("close", async (code) => {
             console.log(`Python script finished with code ${code}`);
 
-            // Clean up the temporary files you received from the user
+            // Clean up input files
             try {
-                if (fs.existsSync(sourceImagePath))
-                    await fs.promises.unlink(sourceImagePath);
-                if (fs.existsSync(targetAssetPath))
-                    await fs.promises.unlink(targetAssetPath);
+                if (fs.existsSync(sourceImagePath)) await fs.promises.unlink(sourceImagePath);
+                if (fs.existsSync(targetAssetPath)) await fs.promises.unlink(targetAssetPath);
             } catch (cleanupError) {
                 console.error("Failed to clean up input files:", cleanupError);
             }
 
-            // If the script was successful (code 0) and the output file exists
             if (code === 0 && fs.existsSync(outputAssetPath)) {
-                console.log(
-                    "Python script successful! Output file is at:",
-                    outputAssetPath
-                );
-
+                console.log("Python script successful! Output at:", outputAssetPath);
                 try {
-                    // It's good to wait a moment to make sure the file is ready to be sent
-                    await new Promise((resolve) => setTimeout(resolve, 2000));
-
-                    const outputMedia =
-                        MessageMedia.fromFilePath(outputAssetPath);
+                    await new Promise((resolve) => setTimeout(resolve, 1000)); // Short delay
+                    const outputMedia = MessageMedia.fromFilePath(outputAssetPath);
                     await client.sendMessage(chatId, outputMedia, {
                         caption: "Here is your generated media!",
                     });
-
                     console.log("Successfully sent media to", chatId);
                     resolve();
                 } catch (sendError) {
                     console.error("Error sending message:", sendError);
-                    client.sendMessage(
-                        chatId,
-                        "Failed to send the generated media. Please check the server logs."
-                    );
                     reject(sendError);
                 } finally {
-                    // Clean up the output file after sending it
+                    // Clean up output file
                     if (fs.existsSync(outputAssetPath)) {
                         await fs.promises.unlink(outputAssetPath);
                     }
                 }
             } else {
-                console.error(
-                    "Python script failed or the output file was not found."
-                );
-                client.sendMessage(
-                    chatId,
-                    "Something went wrong during generation. Please try again."
-                );
+                console.error("Python script failed or output file not found.");
+                client.sendMessage(chatId, "Something went wrong. Please try again.");
                 reject(new Error("Python script failed."));
             }
         });
