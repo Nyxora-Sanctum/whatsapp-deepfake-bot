@@ -9,6 +9,7 @@ const path = require("path");
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
+        executablePath: "/usr/bin/google-chrome",
         args: ["--no-sandbox", "--disable-setuid-sandbox"],
     },
 });
