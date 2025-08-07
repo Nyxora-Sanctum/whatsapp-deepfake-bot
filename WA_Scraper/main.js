@@ -3,8 +3,6 @@ const qrcode = require("qrcode-terminal");
 const fs = require("fs");
 const { spawn } = require("child_process");
 const path = require("path");
-require('dotenv').config();
-
 
 // Use a local Chrome installation to ensure video processing works correctly.
 // Using LocalAuth prevents you from needing to scan the QR code every time.
@@ -12,7 +10,7 @@ const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
         executablePath:
-            process.env.CHROME_EXECUTABLE_PATH,
+            "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
     },
 });
 
@@ -171,8 +169,8 @@ async function runPythonScript(
     assetType
 ) {
     return new Promise((resolve, reject) => {
-        // IMPORTANT: Update this path to where your process_image.py script is located.
-        const pythonScriptPath = "../Deep Live/process_image.py";
+        // Use a relative path from the current main.js file
+        const pythonScriptPath = path.join(__dirname, "DL", "process_image.py");
 
         const tempDir = path.join(__dirname, "temp");
         const outputFilename = `output-${Date.now()}.${
