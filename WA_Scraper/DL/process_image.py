@@ -23,7 +23,7 @@ def parse_args():
     program.add_argument('-s', '--source', help='Path to the source image with the face', dest='source_path', required=True)
     program.add_argument('-t', '--target', help='Path to the target image or video', dest='target_path', required=True)
     program.add_argument('-o', '--output', help='Path for the output file', dest='output_path', required=True)
-    program.add_argument('--execution-provider', help='Execution provider(s) for ONNX runtime (e.g., CUDAExecutionProvider, CPUExecutionProvider)', dest='execution_provider', default=['CUDAExecutionProvider'], nargs='+')
+    program.add_argument('--execution-provider', help='Execution provider(s) for ONNX runtime (e.g., CUDAExecutionProvider, CPUExecutionProvider)', dest='execution_provider', default=['CPUExecutionProvider'], nargs='+')
     return program.parse_args()
     
 def process_image(source_path: str, target_path: str, output_path: str):

@@ -187,7 +187,7 @@ async function runPythonScript(
             "--output",
             outputAssetPath,
             "--execution-provider",
-            "CUDAExecutionProvider", // Use 'cuda' for NVIDIA GPUs or 'cpu'
+            "CPUExecutionProvider", // Use 'cuda' for NVIDIA GPUs or 'cpu'
         ]);
 
         // Log any output from the Python script
