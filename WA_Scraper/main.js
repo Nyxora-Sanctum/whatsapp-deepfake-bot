@@ -7,6 +7,10 @@ const path = require("path");
 // Use a local Chrome installation to ensure video processing works correctly.
 // Using LocalAuth prevents you from needing to scan the QR code every time.
 const client = new Client({
+    authStrategy: new LocalAuth(),
+    puppeteer: {
+        args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    },
 });
 
 // This object keeps track of each user's progress
