@@ -186,9 +186,12 @@ async function runPythonScript(
             targetAssetPath,
             "--output",
             outputAssetPath,
+            "--frame-processor", // <-- ADD THIS LINE
+            "face_swapper", // <-- AND THIS LINE
             "--execution-provider",
-            "CPUExecutionProvider", // Use 'cuda' for NVIDIA GPUs or 'cpu'
+            "CPUExecutionProvider",
         ]);
+
 
         // Log any output from the Python script
         pythonProcess.stdout.on("data", (data) => {
