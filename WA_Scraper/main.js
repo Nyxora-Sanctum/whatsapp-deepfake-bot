@@ -5,7 +5,7 @@ const { spawn } = require("child_process");
 const path = require("path");
 
 // --- LLM Integration ---
-require("dotenv").config();
+require("dotenv").config(); // Load environment variables from .env file
 const ModelClient = require("@azure-rest/ai-inference").default;
 const { AzureKeyCredential } = require("@azure/core-auth");
 
@@ -13,6 +13,7 @@ const { AzureKeyCredential } = require("@azure/core-auth");
 const USER_DB_PATH = path.join(__dirname, "user_database.json");
 let userDB = {};
 
+// Load the user database from the file on startup
 try {
     if (fs.existsSync(USER_DB_PATH)) {
         const data = fs.readFileSync(USER_DB_PATH, "utf8");
@@ -27,6 +28,9 @@ try {
     console.error("Failed to load user database:", err);
 }
 
+/**
+ * Saves the current state of the user database to the JSON file.
+ */
 function saveUserDB() {
     try {
         fs.writeFileSync(USER_DB_PATH, JSON.stringify(userDB, null, 2));
@@ -36,22 +40,27 @@ function saveUserDB() {
 }
 
 // --- Client Initializations ---
+
+// Azure AI Client
 const modelName = "Llama-3.3-70B-Instruct";
 const aiClient = new ModelClient(
     process.env.AZURE_AI_ENDPOINT,
     new AzureKeyCredential(process.env.AZURE_AI_API_KEY)
 );
 
+// WhatsApp Client
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
-        executablePath: "/usr/bin/google-chrome",
+        executablePath: "/usr/bin/google-chrome", // Adjust this path if necessary
         args: ["--no-sandbox", "--disable-setuid-sandbox"],
     },
 });
 
-const userStates = {}; // In-memory state for multi-step processes
-const chatHistories = {}; // In-memory chat history
+// This object keeps track of each user's multi-step progress in memory
+const userStates = {};
+// This object keeps track of recent chat history for each user
+const chatHistories = {};
 const CHAT_HISTORY_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
 
 // --- Helper Functions ---
@@ -69,7 +78,70 @@ function createProgressBar(percentage) {
 }
 
 /**
- * **[NEW & IMPROVED]** Uses an LLM to determine the user's intent, aware of the current conversation context.
+ * A simple regex check to see if a string is a valid emoji.
+ * @param {string} str The string to check.
+ * @returns {boolean} True if the string is an emoji.
+ */
+function isEmoji(str) {
+    // This regex checks for most common emoji characters using Unicode property escapes.
+    const emojiRegex = /\p{Emoji}/u;
+    return emojiRegex.test(str);
+}
+
+/**
+ * Uses an LLM to generate an appropriate emoji reaction for a message.
+ * @param {string} userMessage The message from the user.
+ * @returns {Promise<string|null>} A single emoji character or null if none is suitable.
+ */
+async function getEmojiReaction(userMessage) {
+    const systemPrompt = `You are an emoji reaction assistant for a WhatsApp bot with a 'soft boy' personality. Your task is to analyze the user's message and choose a SINGLE appropriate emoji to react with.
+
+The persona is friendly, kind, supportive, and sometimes playful (Gen Z Indonesian style).
+Good emoji choices include: 😊, ✨, 🥺, ❤️, 👍, ✅, 🙏, 😂, 🤔, 😥, 🎉, 🥳, 🙌, 🥰, 🥲, ✌️.
+Bad choices are aggressive or weird emojis like: 😠, 😈, 👽, 🤖.
+
+You must respond with ONLY the emoji character and absolutely nothing else. No text, no explanation. If no emoji is appropriate, return an empty response.`;
+
+    try {
+        const response = await aiClient.path("/chat/completions").post({
+            body: {
+                messages: [
+                    { role: "system", content: systemPrompt },
+                    {
+                        role: "user",
+                        content: `Choose an emoji reaction for this message: "${userMessage}"`,
+                    },
+                ],
+                max_tokens: 5, // A small number is sufficient for an emoji
+                temperature: 0.3, // A bit of creativity but still consistent
+                model: modelName,
+            },
+        });
+
+        if (response.status !== "200") {
+            console.error("Azure AI Emoji Error:", response.body.error);
+            return null;
+        }
+
+        const emoji = response.body.choices[0].message.content.trim();
+
+        // Validate that the response is actually a single emoji
+        if (emoji && isEmoji(emoji)) {
+            return emoji;
+        }
+
+        console.warn(
+            `LLM returned a non-emoji or invalid response for reaction: "${emoji}"`
+        );
+        return null;
+    } catch (err) {
+        console.error("The emoji reaction encountered an error:", err);
+        return null;
+    }
+}
+
+/**
+ * Uses an LLM to determine the user's intent, aware of the current conversation context.
  * @param {import('whatsapp-web.js').Message} message The incoming message object.
  * @param {object|null} currentUserState The user's current state from userStates.
  * @returns {Promise<string>} The classified intent (e.g., "START_IMAGE", "CANCEL", "CHITCHAT").
@@ -153,7 +225,6 @@ async function getChatResponse(userMessage, history) {
     const systemPrompt =
         "You are a friendly and helpful WhatsApp bot with a 'soft boy' personality. You speak like a kind Gen Z Indonesian. Use 'aku' for yourself and 'kamu' for the user. Absolutely NEVER use 'lo' or 'gue'. Your vocabulary includes soft, modern slang like 'gemes', 'lucu banget', 'ih', 'hehe', 'wkwk', 'santuy', 'semangat ya', 'gapapa kok'. Keep your responses short, sweet, and conversational, like you're texting a close friend. Your main job is to chat, but you can also create images and videos if asked. Right now, your only task is to respond to the user's latest message based on the conversation history.";
 
-    // The history is already being passed correctly here.
     const messages = [
         { role: "system", content: systemPrompt },
         ...history.map((h) => ({ role: h.role, content: h.content })),
@@ -183,7 +254,6 @@ async function getChatResponse(userMessage, history) {
 
 /**
  * Runs the Python face-swapping script and provides real-time updates.
- * (This function remains unchanged as its internal logic is sound)
  * @param {string} chatId The user's chat ID.
  * @param {string} sourceImagePath Path to the source face image.
  * @param {string} targetAssetPath Path to the target image or video.
@@ -322,7 +392,7 @@ async function runPythonScript(
 }
 
 /**
- * **[NEW]** Handles the logic for processing media sent by the user during a task.
+ * Handles the logic for processing media sent by the user during a task.
  * @param {import('whatsapp-web.js').Message} message The incoming message object with media.
  */
 async function handleMediaProvision(message) {
@@ -563,33 +633,27 @@ Kalo mau ngobrol dulu nggapapa kok!`;
                     "Lagi nungguin file nih, bukan ketikan. Kirim fotonya dong, atau bilang 'batal' kalo ngga jadi. Semangat yaa!"
                 );
             } else {
-                // Standard chitchat flow
+                // Standard chitchat flow with LLM-based reactions
+
+                // Run both API calls in parallel for better performance
+                const [emoji, reply] = await Promise.all([
+                    getEmojiReaction(message.body),
+                    getChatResponse(message.body, chatHistories[chatId]),
+                ]);
+
+                // 1. React to the message first, if a suitable emoji was found
                 try {
-                    if (Math.random() < 0.3) {
-                        const softBoyEmojis = [
-                            "👍",
-                            "😊",
-                            "✨",
-                            "🥺",
-                            "❤️",
-                            "✅",
-                        ];
-                        const randomEmoji =
-                            softBoyEmojis[
-                                Math.floor(Math.random() * softBoyEmojis.length)
-                            ];
-                        await message.react(randomEmoji);
+                    if (emoji) {
+                        await message.react(emoji);
                     }
                 } catch (e) {
                     console.warn("Couldn't react to message:", e.message);
                 }
 
-                const reply = await getChatResponse(
-                    message.body,
-                    chatHistories[chatId]
-                );
+                // 2. Send the text reply
                 await client.sendMessage(chatId, reply);
 
+                // 3. Update history with the assistant's reply
                 chatHistories[chatId].push({
                     role: "assistant",
                     content: reply,
