@@ -10,7 +10,7 @@ import sys
 # --- Core Application Imports ---
 try:
     import modules.globals
-    from modules.face_analyser import get_one_face
+    from modules.face_analyser import get_one_face, get_many_faces # Import get_many_faces
     from modules.processors.frame.core import get_frame_processors_modules
     from modules.utilities import is_video
 except ImportError as e:
@@ -23,25 +23,46 @@ def parse_args():
     program = argparse.ArgumentParser(description="High-quality face swapper and enhancer for images and videos.")
     
     # --- Basic Arguments ---
-    program.add_argument('-s', '--source', help='Path to the source image with the face', dest='source_path', required=True)
+    program.add_argument('-s', '--source', help='Path to the source image with the face(s)', dest='source_path', required=True)
     program.add_argument('-t', '--target', help='Path to the target image or video', dest='target_path', required=True)
     program.add_argument('-o', '--output', help='Path for the output file', dest='output_path', required=True)
     
     # --- Quality & Feature Arguments ---
-    program.add_argument('--frame-processors', help='Processors to use (face_swapper, face_enhancer)', dest='frame_processors', default=['face_swapper'], nargs='+')
+    program.add_argument('--frame-processors', help='Processors to use (e.g., face_swapper, face_enhancer, color_corrector)', dest='frame_processors', default=['face_swapper'], nargs='+')
     program.add_argument('--video-encoder', help='Adjust output video encoder', dest='video_encoder', default='libx264', choices=['libx264', 'libx265', 'libvpx-vp9'])
-    program.add_argument('--video-quality', help='Adjust output video quality (0-51, lower is better)', dest='video_quality', type=int, default=18)
+    program.add_argument('--video-quality', help='Adjust output video quality (0-51 for libx264, lower is better)', dest='video_quality', type=int, default=18)
+    
+    # --- UI Feature Parity Arguments ---
+    program.add_argument('--many-faces', help='Process all detected faces in the target', dest='many_faces', action='store_true')
+    program.add_argument('--keep-fps', help='Preserve the original FPS of the target video', dest='keep_fps', action='store_true')
+    program.add_argument('--keep-audio', help='Preserve the audio from the target video', dest='keep_audio', action='store_true', default=True)
+    program.add_argument('--no-audio', help='Do not include audio in the output video', dest='keep_audio', action='store_false')
     
     # --- Performance & Resource Arguments ---
-    program.add_argument('--execution-provider', help='Execution provider for ONNX runtime', dest='execution_provider', default=['cpu'], nargs='+')
+    program.add_argument('--execution-provider', help='Execution provider for ONNX runtime (e.g., cpu, cuda)', dest='execution_provider', default=['cpu'], nargs='+')
     program.add_argument('--execution-threads', help='Number of execution threads', dest='execution_threads', type=int, default=multiprocessing.cpu_count())
     program.add_argument('--max-memory', help='Maximum amount of RAM in GB to use', dest='max_memory', type=int, default=6)
     
     return program.parse_args()
 
+def set_globals(args):
+    """Sets the global variables in the modules namespace."""
+    modules.globals.execution_providers = args.execution_provider
+    modules.globals.execution_threads = args.execution_threads
+    modules.globals.max_memory = args.max_memory
+    # --- Set feature parity globals ---
+    modules.globals.many_faces = args.many_faces
+    modules.globals.keep_fps = args.keep_fps
+    modules.globals.keep_audio = args.keep_audio
+    # The following are controlled by including them in --frame-processors
+    # modules.globals.color_correction = 'color_corrector' in args.frame_processors
+    # modules.globals.mouth_mask = 'mouth_mask_processor' in args.frame_processors # Example name
 
 def process_frames(source_face, temp_frame, frame_processors):
     """Helper function to apply a sequence of frame processors."""
+    # The underlying process_frame function in the modules should handle the 'many_faces'
+    # global variable automatically. We provide one source face, and it applies it to
+    # one or many target faces based on the global setting.
     for processor in frame_processors:
         temp_frame = processor.process_frame(
             source_face=source_face,
@@ -60,6 +81,7 @@ def process_image(args, frame_processors):
             print("Error: Could not read one of the image files.", file=sys.stderr)
             return
 
+        # Use get_one_face for the source, as we are swapping one face onto the target.
         source_face = get_one_face(source_image)
         if source_face is None:
             print("Error: No face detected in the source image.", file=sys.stderr)
@@ -81,14 +103,15 @@ def process_image(args, frame_processors):
 
 def process_video(args, frame_processors):
     """Processes video with face swap, enhancement, and high-quality encoding."""
-    if not shutil.which('ffmpeg'):
-        print("Error: FFmpeg is not installed or not in the system's PATH.", file=sys.stderr)
-        return
+    if args.keep_audio and not shutil.which('ffmpeg'):
+        print("Warning: FFmpeg is not installed or not in the system's PATH.", file=sys.stderr)
+        print("Audio will not be included in the output video.", file=sys.stderr)
+        args.keep_audio = False
     
     # Define temporary paths
-    temp_dir = os.path.join(os.path.dirname(args.output_path), 'temp')
+    temp_dir = os.path.join(os.path.dirname(args.output_path), f'temp_{os.path.basename(args.output_path)}')
     os.makedirs(temp_dir, exist_ok=True)
-    temp_video_path = os.path.join(temp_dir, os.path.basename(args.output_path))
+    temp_video_path = os.path.join(temp_dir, f'temp_video.mp4')
     
     try:
         source_image = cv2.imread(args.source_path)
@@ -96,7 +119,6 @@ def process_video(args, frame_processors):
             print("Error: Could not read the source image file.", file=sys.stderr)
             return
 
-        # Assuming get_one_face is defined elsewhere
         source_face = get_one_face(source_image) 
         if source_face is None:
             print("Error: No face detected in the source image.", file=sys.stderr)
@@ -109,7 +131,7 @@ def process_video(args, frame_processors):
 
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        fps = cap.get(cv2.CAP_PROP_FPS)
+        fps = cap.get(cv2.CAP_PROP_FPS) if args.keep_fps else 30.0
         frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
@@ -124,73 +146,62 @@ def process_video(args, frame_processors):
             
             frame_number += 1
             
-            # --- MODIFICATION START ---
-            # Calculate and print progress for Node.js
+            # Print progress for Node.js or other external scripts
             if frame_count > 0:
                 percentage = int((frame_number / frame_count) * 100)
-                # This specific format is read by the Node.js script
-                print(f"PROGRESS:{percentage}")
-                # Flush the output to ensure it's sent immediately
-                sys.stdout.flush() 
-            # --- MODIFICATION END ---
+                print(f"PROGRESS:{percentage}", flush=True)
             
-            # Assuming process_frames is defined elsewhere
             processed_frame = process_frames(source_face, frame, frame_processors)
             out.write(processed_frame if processed_frame is not None else frame)
 
         cap.release()
         out.release()
-        print(f"\nFrame processing complete. Starting final video encoding...")
+        print(f"\nFrame processing complete. Finalizing video output...")
 
-        # Build the high-quality FFmpeg command
-        ffmpeg_command = [
-            'ffmpeg',
-            '-i', temp_video_path,
-            '-i', args.target_path,
-            '-c:v', args.video_encoder,
-            '-crf', str(args.video_quality),
-            '-preset', 'medium',
-            '-c:a', 'copy',
-            '-map', '0:v:0',
-            '-map', '1:a:0?',
-            '-threads', str(args.execution_threads),
-            '-y',
-            args.output_path
-        ]
-        
-        # Using DEVNULL to hide ffmpeg's own progress output from our main stdout
-        subprocess.run(ffmpeg_command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        if args.keep_audio:
+            print("Encoding video and merging audio with FFmpeg...")
+            ffmpeg_command = [
+                'ffmpeg', '-hide_banner', '-loglevel', 'error',
+                '-i', temp_video_path,
+                '-i', args.target_path,
+                '-c:v', args.video_encoder,
+                '-crf', str(args.video_quality),
+                '-preset', 'medium',
+                '-c:a', 'copy',
+                '-map', '0:v:0',
+                '-map', '1:a:0?',
+                '-threads', str(args.execution_threads),
+                '-y',
+                args.output_path
+            ]
+            subprocess.run(ffmpeg_command, check=True)
+        else:
+            print("Saving video without audio...")
+            shutil.move(temp_video_path, args.output_path)
         
         print(f"Video successfully processed and saved to {args.output_path}")
 
     except Exception as e:
-        # Check if the error is from the subprocess and print its stderr
         if isinstance(e, subprocess.CalledProcessError) and e.stderr:
             print(f"\nAn error occurred during FFmpeg encoding: {e.stderr.decode()}", file=sys.stderr)
         else:
             print(f"\nAn error occurred during video processing: {e}", file=sys.stderr)
     finally:
-        # Clean up the temporary directory
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
         cv2.destroyAllWindows()
+
 def main():
     """Main function to parse arguments and run the processing pipeline."""
     args = parse_args()
-
-    # Set global settings for the face processing modules
-    modules.globals.execution_providers = args.execution_provider
-    modules.globals.execution_threads = args.execution_threads
-    modules.globals.max_memory = args.max_memory
+    set_globals(args)
     
-    # Load the requested frame processors
     frame_processors = get_frame_processors_modules(args.frame_processors)
     
     if is_video(args.target_path):
         process_video(args, frame_processors)
     else:
         process_image(args, frame_processors)
-
 
 if __name__ == '__main__':
     main()

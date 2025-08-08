@@ -160,41 +160,52 @@ async function getChatResponse(userMessage, history) {
 }
 
 /**
- * Runs the Python face-swapping script and provides real-time updates.
+ * MODIFIED: Runs the enhanced Python script with user-selected options.
  * @param {string} chatId The user's chat ID.
- * @param {string} sourceImagePath Path to the source face image.
- * @param {string} targetAssetPath Path to the target image or video.
- * @param {string} assetType The type of asset, either "image" or "video".
- * @param {import('whatsapp-web.js').Message} loadingMessage The message to edit for status updates.
+ * @param {object} options The state object containing all paths and user choices.
  * @returns {Promise<void>}
  */
-async function runPythonScript(
-    chatId,
-    sourceImagePath,
-    targetAssetPath,
-    assetType,
-    loadingMessage
-) {
+async function runPythonScript(chatId, options) {
     return new Promise(async (resolve, reject) => {
+        const { sourceImage, mainAsset, type, useEnhancer, processManyFaces } =
+            options;
+
+        const loadingMessage = await client.sendMessage(
+            chatId,
+            "Sip, bahan lengkap & pilihan dicatet. Aku proses dulu ya, sabar..."
+        );
+
         const scriptDir = path.join(__dirname, "DL");
-        const pythonScriptPath = path.join(scriptDir, "process_image.py");
+        const pythonScriptPath = path.join(scriptDir, "process_image.py"); // Ensure your Python script is named this
         const tempDir = path.join(__dirname, "temp");
         const outputFilename = `output-${Date.now()}.${
-            assetType === "video" ? "mp4" : "png"
+            type === "video" ? "mp4" : "png"
         }`;
         const outputAssetPath = path.join(tempDir, outputFilename);
 
+        // --- Build arguments based on user choices ---
         const args = [
             pythonScriptPath,
             "--source",
-            sourceImagePath,
+            sourceImage,
             "--target",
-            targetAssetPath,
+            mainAsset,
             "--output",
             outputAssetPath,
             "--execution-provider",
-            "CPUExecutionProvider",
+            "CPUExecutionProvider", // or "cuda" if you have a compatible GPU
+            "--keep-fps", // Always keep FPS for better quality
         ];
+
+        const frameProcessors = ["face_swapper"];
+        if (useEnhancer) {
+            frameProcessors.push("face_enhancer");
+        }
+        args.push("--frame-processors", ...frameProcessors);
+
+        if (processManyFaces) {
+            args.push("--many-faces");
+        }
 
         console.log(`Calling Python script with args: ${args.join(" ")}`);
         const pythonProcess = spawn("python", args, { cwd: scriptDir });
@@ -202,25 +213,32 @@ async function runPythonScript(
 
         pythonProcess.stdout.on("data", async (data) => {
             const output = data.toString().trim();
-            console.log("Python output:", output);
+            // Filter out any non-progress related output
+            const progressLines = output
+                .split("\n")
+                .filter((line) => line.startsWith("PROGRESS:"));
+            if (progressLines.length === 0) {
+                console.log("Python output:", output);
+                return;
+            }
 
-            if (output.startsWith("PROGRESS:")) {
-                const currentProgress = parseInt(output.split(":")[1], 10);
-                if (
-                    currentProgress > lastReportedProgress + 4 &&
-                    currentProgress < 100
-                ) {
-                    lastReportedProgress = currentProgress;
-                    const progressBar = createProgressBar(currentProgress);
-                    const messageText = `Bentar yaa, Tunggu AI nya proses...\n\n${progressBar}\n\nKalo video emang butuh waktu lebih lama sih. Jadi tunggu dulu hehe.`;
-                    try {
-                        await loadingMessage.edit(messageText);
-                    } catch (editError) {
-                        console.warn(
-                            "Could not edit loading message:",
-                            editError.message
-                        );
-                    }
+            const lastProgressLine = progressLines[progressLines.length - 1];
+            const currentProgress = parseInt(
+                lastProgressLine.split(":")[1],
+                10
+            );
+
+            if (
+                currentProgress > lastReportedProgress + 4 &&
+                currentProgress < 100
+            ) {
+                lastReportedProgress = currentProgress;
+                const progressBar = createProgressBar(currentProgress);
+                const messageText = `Bentar yaa, AI-nya lagi kerja keras...\n\n${progressBar}\n\nKalo video emang butuh waktu lebih lama sih. Jadi tunggu dulu hehe.`;
+                try {
+                    await loadingMessage.edit(messageText);
+                } catch (editError) {
+                    // Ignore errors if message is deleted or can't be edited
                 }
             }
         });
@@ -235,35 +253,30 @@ async function runPythonScript(
         pythonProcess.on("close", async (code) => {
             console.log(`Python script finished with code ${code}`);
             try {
-                if (fs.existsSync(sourceImagePath))
-                    await fs.promises.unlink(sourceImagePath);
-                if (fs.existsSync(targetAssetPath))
-                    await fs.promises.unlink(targetAssetPath);
+                if (fs.existsSync(sourceImage))
+                    await fs.promises.unlink(sourceImage);
+                if (fs.existsSync(mainAsset))
+                    await fs.promises.unlink(mainAsset);
             } catch (cleanupError) {
                 console.error("Failed to clean up input files:", cleanupError);
             }
 
             const successful = code === 0 && fs.existsSync(outputAssetPath);
-            const noFaceDetected =
-                pythonErrorOutput.includes("No face detected");
+            const noFaceDetected = pythonErrorOutput.includes(
+                "No face detected in the source image"
+            );
 
             if (successful) {
-                console.log(
-                    "Python script successful! Output at:",
-                    outputAssetPath
-                );
                 try {
                     await loadingMessage.edit(
                         "Udah selese! Bentar, aku kirim hasilnya."
                     );
                     await new Promise((res) => setTimeout(res, 1000));
-
                     const outputMedia =
                         MessageMedia.fromFilePath(outputAssetPath);
                     await client.sendMessage(chatId, outputMedia, {
                         caption: "Nih hasilnya, goks kan? wkwkwk",
                     });
-                    console.log("Successfully sent media to", chatId);
                     resolve();
                 } catch (sendError) {
                     console.error("Error sending message:", sendError);
@@ -272,18 +285,16 @@ async function runPythonScript(
                     );
                     reject(sendError);
                 } finally {
-                    if (fs.existsSync(outputAssetPath)) {
+                    if (fs.existsSync(outputAssetPath))
                         await fs.promises.unlink(outputAssetPath);
-                    }
-                    await loadingMessage.delete(true);
+                    await loadingMessage.delete(true).catch(() => {});
                 }
             } else {
-                console.error("Python script failed or output file not found.");
                 let userErrorMessage =
                     "Waduh, ada error pas proses. Coba lagi ya.";
                 if (noFaceDetected) {
                     userErrorMessage =
-                        "Mukanya nggak keliatan di foto pertama. Coba pake foto lain deh. Yang lurus ke depan, jangan miring-miring, dan jangan ketutupan apa-apa.";
+                        "Mukanya nggak keliatan di foto pertama. Coba pake foto lain deh. Yang lurus ke depan dan jelas ya.";
                 }
                 await loadingMessage.edit(userErrorMessage);
                 reject(
@@ -313,194 +324,174 @@ client.on("message", async (message) => {
     const lowerCaseBody = message.body.toLowerCase();
     const now = Date.now();
 
-    // --- History Management: Clear history if older than 15 mins ---
+    // History Management
     if (chatHistories[chatId] && chatHistories[chatId].length > 0) {
-        const firstMessageTimestamp = chatHistories[chatId][0].timestamp;
-        if (now - firstMessageTimestamp > CHAT_HISTORY_TIMEOUT_MS) {
-            console.log(`Chat history for ${chatId} expired. Clearing.`);
+        if (
+            now - chatHistories[chatId][0].timestamp >
+            CHAT_HISTORY_TIMEOUT_MS
+        ) {
             delete chatHistories[chatId];
         }
     }
-    if (!chatHistories[chatId]) {
-        chatHistories[chatId] = [];
-    }
+    if (!chatHistories[chatId]) chatHistories[chatId] = [];
 
-    // --- New User Onboarding ---
+    // New User Onboarding
     if (!userDB[chatId]) {
-        console.log(`New user detected: ${chatId}. Sending T&C.`);
-        const tncPath = path.join(__dirname, "TNC.pdf");
-
-        if (fs.existsSync(tncPath)) {
-            const tncMedia = MessageMedia.fromFilePath(tncPath);
-            await client.sendMessage(
-                chatId,
-                "Haloo, dibaca dulu ya syarat dan ketentuannya. Makasi."
-            );
-            await client.sendMessage(chatId, tncMedia);
-        } else {
-            console.warn("TNC.pdf not found in the script directory.");
-            await client.sendMessage(
-                chatId,
-                "Oh iya, datamu disini tetap privat ya, jadi nggaakan dijual/dipakai/disimpan."
-            );
-        }
-
+        console.log(`New user detected: ${chatId}.`);
+        await client.sendMessage(
+            chatId,
+            "Haloo! Aku bot AI yang bisa tuker muka di foto atau video. Sebelum mulai, datamu di sini aman kok, nggak bakal disalahgunain."
+        );
         userDB[chatId] = { firstContact: new Date().toISOString() };
         saveUserDB();
-
-        const welcomeMessage = `
-Aku bisa ngubah muka orang di foto/video jadi muka orang lain.
-
-Kalo mau bikin, bilang aja, contoh:
-➡️ "Ubahin wajah di fotoku dongg"
-➡️ "Ubahin wajah di videoku yaa"
-
-Kalo mau ngobrol dulu nggapapa kok!
-        `;
+        const welcomeMessage = `Kalo mau bikin, bilang aja, contoh:\n➡️ *"Ubahin wajah di fotoku dongg"*\n\nKalo mau ngobrol dulu juga boleh!`;
         await client.sendMessage(chatId, welcomeMessage.trim());
         return;
     }
 
-    // --- Handle Active Generation Process WITH Cancellation/Switching ---
+    // --- MODIFIED: Multi-step process with user choices ---
     if (userStates[chatId]) {
-        // --- Check for text commands (cancel/switch) before checking for media ---
+        const currentState = userStates[chatId];
+
+        // --- Cancellation Logic ---
         if (!message.hasMedia) {
-            const cancelKeywords = [
-                "cancel",
-                "batal",
-                "stop",
-                "gajadi",
-                "berhenti",
-            ];
-            // 1. Check for cancellation
+            const cancelKeywords = ["cancel", "batal", "stop", "gajadi"];
             if (
                 cancelKeywords.some((keyword) =>
                     lowerCaseBody.includes(keyword)
                 )
             ) {
-                console.log(`Process cancelled by user ${chatId}.`);
                 await client.sendMessage(
                     chatId,
-                    "Oke, prosesnya aku batalin ya. Kalo mau mulai lagi, bilang aja hehe. 😊"
+                    "Oke, prosesnya aku batalin ya. 😊"
                 );
-                delete userStates[chatId]; // Clear the state
-                return; // Stop further processing
-            }
-
-            // 2. Check for an intent switch
-            const newIntent = await getIntent(lowerCaseBody);
-            if (
-                (newIntent === "IMAGE" || newIntent === "VIDEO") &&
-                newIntent.toLowerCase() !== userStates[chatId].type
-            ) {
-                console.log(
-                    `User ${chatId} switching from ${userStates[chatId].type} to ${newIntent}.`
-                );
-                await client.sendMessage(
-                    chatId,
-                    `Oke, kita ganti ya. Batalin yang ${
-                        userStates[chatId].type
-                    }, sekarang kita mulai buat ${newIntent.toLowerCase()} baru.`
-                );
-                delete userStates[chatId]; // Clear the old state to start a new one
-                // Do NOT return, let the code fall through to the main intent handler
-            } else {
-                // 3. If it's just random text, remind the user what to do
-                await client.sendMessage(
-                    chatId,
-                    "Lagi nungguin file nih, bukan ketikan. Kirim fotonya dong, atau bilang 'batal' kalo ngga jadi. Semangat yaa!"
-                );
+                delete userStates[chatId];
                 return;
             }
         }
 
-        // --- This part now only runs if a state was NOT cleared above ---
-        if (userStates[chatId] && message.hasMedia) {
-            const currentState = userStates[chatId];
-            const assetTypeName =
-                currentState.type === "image" ? "gambar" : "video";
-            const media = await message.downloadMedia();
-            const mediaType = media.mimetype.split("/")[0];
-
-            // State 1: Waiting for the face image
-            if (currentState.state === "waiting_for_face") {
-                const filename = `face-${Date.now()}.${
-                    media.mimetype.split("/")[1]
-                }`;
-                const tempDir = path.join(__dirname, "temp");
-                if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
-                const filepath = path.join(tempDir, filename);
-
-                fs.writeFileSync(filepath, media.data, { encoding: "base64" });
-                currentState.faceImage = filepath;
-                currentState.state = `waiting_for_${currentState.type}`;
-
-                client.sendMessage(
-                    chatId,
-                    `Oke, foto muka dapet. Sekarang kirim ${assetTypeName} targetnya yaa.`
-                );
-                return;
-            }
-
-            // State 2: Waiting for the target image/video
-            else if (
-                currentState.state === `waiting_for_${currentState.type}`
-            ) {
-                const isCorrectType =
-                    (currentState.type === "image" && mediaType === "image") ||
-                    (currentState.type === "video" && mediaType === "video");
-
-                if (isCorrectType) {
-                    const filename = `${currentState.type}-${Date.now()}.${
+        // --- State Machine for collecting data and choices ---
+        switch (currentState.state) {
+            case "waiting_for_face":
+                if (message.hasMedia && message.mimetype.startsWith("image/")) {
+                    const media = await message.downloadMedia();
+                    const filename = `face-${Date.now()}.${
                         media.mimetype.split("/")[1]
                     }`;
                     const tempDir = path.join(__dirname, "temp");
+                    if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
                     const filepath = path.join(tempDir, filename);
                     fs.writeFileSync(filepath, media.data, {
                         encoding: "base64",
                     });
-                    currentState.mainAsset = filepath;
 
-                    const loadingMessage = await client.sendMessage(
+                    currentState.faceImage = filepath;
+                    currentState.state = "waiting_for_target";
+
+                    const assetTypeName =
+                        currentState.type === "image" ? "gambar" : "video";
+                    await client.sendMessage(
                         chatId,
-                        "Sip, bahan lengkap. Aku proses dulu ya, sabar..."
+                        `Sip, foto muka dapet. Sekarang kirim ${assetTypeName} targetnya yaa.`
                     );
-
-                    try {
-                        await runPythonScript(
-                            chatId,
-                            currentState.faceImage,
-                            currentState.mainAsset,
-                            currentState.type,
-                            loadingMessage
-                        );
-                        console.log(
-                            `Process for ${chatId} completed successfully.`
-                        );
-                    } catch (error) {
-                        console.error(
-                            `Script execution failed for ${chatId}:`,
-                            error.message
-                        );
-                    } finally {
-                        delete userStates[chatId]; // Always reset state
-                    }
                 } else {
-                    client.sendMessage(
+                    await client.sendMessage(
                         chatId,
-                        `Ih, itu kan ${mediaType}. Aku butuhnya ${assetTypeName}, kamu salah kirim hehe. Kirim ulang yang bener ya.`
+                        "Itu bukan foto, hehe. Kirimin foto muka yang jelas ya."
                     );
                 }
-            }
-            return; // Stop further processing after handling media
+                break;
+
+            case "waiting_for_target":
+                if (message.hasMedia) {
+                    const media = await message.downloadMedia();
+                    const mediaType = media.mimetype.split("/")[0];
+                    const isCorrectType = mediaType === currentState.type;
+
+                    if (isCorrectType) {
+                        const filename = `${currentState.type}-${Date.now()}.${
+                            media.mimetype.split("/")[1]
+                        }`;
+                        const tempDir = path.join(__dirname, "temp");
+                        const filepath = path.join(tempDir, filename);
+                        fs.writeFileSync(filepath, media.data, {
+                            encoding: "base64",
+                        });
+
+                        currentState.mainAsset = filepath;
+                        currentState.state = "waiting_for_enhancer_choice";
+
+                        await client.sendMessage(
+                            chatId,
+                            "Oke, bahan lengkap! Terakhir, aku mau tanya beberapa hal.\n\nMukanya mau dibuat lebih jernih (enhance)? Jawab *'iya'* atau *'ngga'*, hehe."
+                        );
+                    } else {
+                        const assetTypeName =
+                            currentState.type === "image" ? "gambar" : "video";
+                        await client.sendMessage(
+                            chatId,
+                            `Waduh, salah file. Aku butuhnya ${assetTypeName}, bukan ${mediaType}. Kirim ulang ya.`
+                        );
+                    }
+                } else {
+                    await client.sendMessage(
+                        chatId,
+                        `Bukan ngetik, kirim file ${currentState.type} nya dongg.`
+                    );
+                }
+                break;
+
+            case "waiting_for_enhancer_choice":
+                if (
+                    lowerCaseBody.includes("iya") ||
+                    lowerCaseBody.includes("yes")
+                ) {
+                    currentState.useEnhancer = true;
+                } else {
+                    currentState.useEnhancer = false;
+                }
+                currentState.state = "waiting_for_faces_choice";
+                await client.sendMessage(
+                    chatId,
+                    "Sip, dicatet. Kalo di target ada banyak muka, aku proses *semua* atau *satu* aja? Jawab *'semua'* atau *'satu'*."
+                );
+                break;
+
+            case "waiting_for_faces_choice":
+                if (
+                    lowerCaseBody.includes("semua") ||
+                    lowerCaseBody.includes("all")
+                ) {
+                    currentState.processManyFaces = true;
+                } else {
+                    currentState.processManyFaces = false;
+                }
+
+                // All choices made, run the script
+                try {
+                    await runPythonScript(chatId, currentState);
+                } catch (error) {
+                    console.error(
+                        `Script execution failed for ${chatId}:`,
+                        error.message
+                    );
+                } finally {
+                    delete userStates[chatId]; // Always reset state after process
+                }
+                break;
+
+            default:
+                await client.sendMessage(
+                    chatId,
+                    "Lagi nungguin file nih, bukan ketikan. Atau bilang 'batal' kalo ngga jadi."
+                );
         }
+        return; // Stop further processing
     }
 
-    // --- If not in a process, determine intent (Chit-chat, Image, Video) ---
+    // --- If not in a process, determine intent ---
     const intent = await getIntent(lowerCaseBody);
     console.log(`User: "${lowerCaseBody}" -> Intent: ${intent}`);
-
-    // Add user message to history AFTER intent classification but BEFORE response generation
     chatHistories[chatId].push({
         role: "user",
         content: message.body,
@@ -509,45 +500,31 @@ Kalo mau ngobrol dulu nggapapa kok!
 
     switch (intent) {
         case "IMAGE":
-            userStates[chatId] = {
-                state: "waiting_for_face",
-                faceImage: null,
-                mainAsset: null,
-                type: "image",
-            };
-            client.sendMessage(
-                chatId,
-                "Oke siap, kita buatin gambarnya. Kirimin aku satu foto muka kamu yang jelas yaa, biar hasilnya bagus."
-            );
-            break;
-
         case "VIDEO":
             userStates[chatId] = {
                 state: "waiting_for_face",
-                faceImage: null,
-                mainAsset: null,
-                type: "video",
+                type: intent.toLowerCase(),
             };
-            client.sendMessage(
+            await client.sendMessage(
                 chatId,
-                "Asik, bikin video! Boleh minta satu foto muka kamu yang jelas dulu, hehe."
+                `Oke siap, kita buatin ${intent.toLowerCase()}nya. Kirimin aku satu foto muka kamu yang jelas yaa, biar hasilnya bagus.`
             );
             break;
 
         case "CHITCHAT":
-        case "UNKNOWN": // Treat UNKNOWN as CHITCHAT
+        case "UNKNOWN":
         default:
             try {
                 if (Math.random() < 0.3) {
                     const softBoyEmojis = ["👍", "😊", "✨", "🥺", "❤️", "✅"];
-                    const randomEmoji =
+                    await message.react(
                         softBoyEmojis[
                             Math.floor(Math.random() * softBoyEmojis.length)
-                        ];
-                    await message.react(randomEmoji);
+                        ]
+                    );
                 }
             } catch (e) {
-                console.warn("Couldn't react to message:", e.message);
+                /* ignore react error */
             }
 
             const reply = await getChatResponse(
@@ -555,7 +532,6 @@ Kalo mau ngobrol dulu nggapapa kok!
                 chatHistories[chatId]
             );
             await client.sendMessage(chatId, reply);
-
             chatHistories[chatId].push({
                 role: "assistant",
                 content: reply,
