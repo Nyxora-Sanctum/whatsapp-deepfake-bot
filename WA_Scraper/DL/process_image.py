@@ -1,102 +1,119 @@
 import os
+import sys
 import argparse
 import cv2
 import subprocess
 import shutil
+import multiprocessing
 
 # --- Core Application Imports ---
-# These are assumed to be part of your project structure (e.g., roop).
-# Make sure these modules are available in your environment.
 try:
     import modules.globals
     from modules.face_analyser import get_one_face
     from modules.processors.frame.core import get_frame_processors_modules
     from modules.utilities import is_video
 except ImportError as e:
-    print(f"Error: A required module could not be imported: {e}")
-    print("Please ensure you are running this script from the correct directory and all dependencies are installed.")
-    exit(1)
+    print(f"Error: A required module could not be imported: {e}", file=sys.stderr)
+    print("Please ensure you are running this script from the correct directory and all dependencies are installed.", file=sys.stderr)
+    sys.exit(1)
 
 def parse_args():
-    """Parses command line arguments for the script."""
-    program = argparse.ArgumentParser(description="Face swapper for images and videos.")
+    """Parses command line arguments for the enhanced script."""
+    program = argparse.ArgumentParser(description="High-quality face swapper and enhancer for images and videos.")
+    
+    # --- Basic Arguments ---
     program.add_argument('-s', '--source', help='Path to the source image with the face', dest='source_path', required=True)
     program.add_argument('-t', '--target', help='Path to the target image or video', dest='target_path', required=True)
     program.add_argument('-o', '--output', help='Path for the output file', dest='output_path', required=True)
-    program.add_argument('--execution-provider', help='Execution provider(s) for ONNX runtime (e.g., CUDAExecutionProvider, CPUExecutionProvider)', dest='execution_provider', default=['CPUExecutionProvider'], nargs='+')
-    return program.parse_args()
     
-def process_image(source_path: str, target_path: str, output_path: str):
-    """Loads images, performs a face swap, and saves the output."""
+    # --- Quality & Feature Arguments ---
+    program.add_argument('--frame-processors', help='Processors to use (face_swapper, face_enhancer)', dest='frame_processors', default=['face_swapper', 'face_enhancer'], nargs='+')
+    program.add_argument('--video-encoder', help='Adjust output video encoder', dest='video_encoder', default='libx264', choices=['libx264', 'libx265', 'libvpx-vp9'])
+    program.add_argument('--video-quality', help='Adjust output video quality (0-51, lower is better)', dest='video_quality', type=int, default=18)
+    
+    # --- Performance & Resource Arguments ---
+    program.add_argument('--execution-provider', help='Execution provider for ONNX runtime', dest='execution_provider', default=['cpu'], nargs='+')
+    program.add_argument('--execution-threads', help='Number of execution threads', dest='execution_threads', type=int, default=multiprocessing.cpu_count())
+    program.add_argument('--max-memory', help='Maximum amount of RAM in GB to use', dest='max_memory', type=int, default=6)
+    
+    return program.parse_args()
+
+
+def process_frames(source_face, temp_frame, frame_processors):
+    """Helper function to apply a sequence of frame processors."""
+    for processor in frame_processors:
+        temp_frame = processor.process_frame(
+            source_face=source_face,
+            temp_frame=temp_frame
+        )
+    return temp_frame
+
+
+def process_image(args, frame_processors):
+    """Loads images, performs processing, and saves the output."""
     try:
-        source_image = cv2.imread(source_path)
-        target_image = cv2.imread(target_path)
+        source_image = cv2.imread(args.source_path)
+        target_image = cv2.imread(args.target_path)
 
         if source_image is None or target_image is None:
-            print("Error: Could not read one of the image files.")
+            print("Error: Could not read one of the image files.", file=sys.stderr)
             return
 
         source_face = get_one_face(source_image)
         if source_face is None:
-            print("Error: No face detected in the source image.")
+            print("Error: No face detected in the source image.", file=sys.stderr)
             return
         
-        modules.globals.frame_processors = ['face_swapper']
-        frame_processors = get_frame_processors_modules(modules.globals.frame_processors)
-                
-        processed_frame = frame_processors[0].process_frame(source_face, target_image)
+        print("Processing image with:", ', '.join(args.frame_processors))
+        result = process_frames(source_face, target_image, frame_processors)
         
-        if processed_frame is None:
-            print("Error: Face swapping failed.")
+        if result is None:
+            print("Error: Image processing failed.", file=sys.stderr)
             return
 
-        cv2.imwrite(output_path, processed_frame)
-        print(f"Image successfully processed and saved to {output_path}")
+        cv2.imwrite(args.output_path, result)
+        print(f"Image successfully processed and saved to {args.output_path}")
 
     except Exception as e:
-        print(f"An error occurred during image processing: {e}")
+        print(f"An error occurred during image processing: {e}", file=sys.stderr)
 
-def process_video(source_path: str, target_path: str, output_path: str):
-    """
-    Creates a video with the 'mp4v' codec and then converts it to H.264 using FFmpeg for maximum compatibility.
-    """
-    # --- NEW: Check for FFmpeg before starting ---
+
+def process_video(args, frame_processors):
+    """Processes video with face swap, enhancement, and high-quality encoding."""
     if not shutil.which('ffmpeg'):
-        print("Error: FFmpeg is not installed or not found in the system's PATH.")
-        print("Please install FFmpeg to use the video processing feature.")
+        print("Error: FFmpeg is not installed or not in the system's PATH.", file=sys.stderr)
         return
-        
-    # Define a temporary path for the initial video file
-    temp_output_path = os.path.splitext(output_path)[0] + '_temp.mp4'
-
+    
+    # Define temporary paths
+    temp_dir = os.path.join(os.path.dirname(args.output_path), 'temp')
+    os.makedirs(temp_dir, exist_ok=True)
+    temp_video_path = os.path.join(temp_dir, os.path.basename(args.output_path))
+    
     try:
-        source_image = cv2.imread(source_path)
+        source_image = cv2.imread(args.source_path)
         if source_image is None:
-            print("Error: Could not read the source image file.")
+            print("Error: Could not read the source image file.", file=sys.stderr)
             return
 
         source_face = get_one_face(source_image)
         if source_face is None:
-            print("Error: No face detected in the source image.")
+            print("Error: No face detected in the source image.", file=sys.stderr)
             return
         
-        modules.globals.frame_processors = ['face_swapper']
-        frame_processors = get_frame_processors_modules(modules.globals.frame_processors)
-
-        cap = cv2.VideoCapture(target_path)
+        cap = cv2.VideoCapture(args.target_path)
         if not cap.isOpened():
-            print(f"Error: Could not open the target video file: {target_path}")
+            print(f"Error: Could not open the target video file: {args.target_path}", file=sys.stderr)
             return
 
         width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         fps = cap.get(cv2.CAP_PROP_FPS)
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
-        # --- STEP 1: Write to a temporary file using the reliable 'mp4v' codec ---
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(temp_output_path, fourcc, fps, (width, height))
+        out = cv2.VideoWriter(temp_video_path, fourcc, fps, (width, height))
 
-        print("Processing video (Step 1/2: Initial creation)...")
+        print(f"Processing {frame_count} video frames with: {', '.join(args.frame_processors)}...")
         frame_number = 0
         while cap.isOpened():
             ret, frame = cap.read()
@@ -104,54 +121,61 @@ def process_video(source_path: str, target_path: str, output_path: str):
                 break
             
             frame_number += 1
-            print(f"Processing frame {frame_number}...", end='\r')
-            processed_frame = frame_processors[0].process_frame(source_face, frame)
-
+            print(f"Processing frame {frame_number}/{frame_count}...", end='\r')
+            
+            processed_frame = process_frames(source_face, frame, frame_processors)
             out.write(processed_frame if processed_frame is not None else frame)
 
         cap.release()
         out.release()
-        print(f"\nStep 1 complete. Temporary file saved to {temp_output_path}")
+        print(f"\nFrame processing complete. Starting final video encoding...")
 
-# --- STEP 2: Convert the temporary file to H.264 using FFmpeg ---
-        print("Processing video (Step 2/2: Converting to H.264)...")
+        # Build the high-quality FFmpeg command
         ffmpeg_command = [
             'ffmpeg',
-            '-i', temp_output_path,      # Input file
-            '-vcodec', 'libx264',       # Video codec: H.264
-            '-crf', '6',               # CHANGED: Lower for higher quality (e.g., 18)
-            '-preset', 'medium',        # CHANGED: Slower for better compression
-            '-y',                       # Overwrite output file if it exists
-            output_path                 # Final output file path
+            '-i', temp_video_path,
+            '-i', args.target_path,
+            '-c:v', args.video_encoder,
+            '-crf', str(args.video_quality),
+            '-preset', 'medium',
+            '-c:a', 'copy',
+            '-map', '0:v:0',
+            '-map', '1:a:0?',
+            '-threads', str(args.execution_threads),
+            '-y',
+            args.output_path
         ]
         
-        # Use DEVNULL to hide FFmpeg's verbose output from the console
         subprocess.run(ffmpeg_command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         
-        print(f"Step 2 complete. Final video saved to {output_path}")
+        print(f"Video successfully processed and saved to {args.output_path}")
 
     except Exception as e:
-        print(f"\nAn error occurred during video processing: {e}")
+        print(f"\nAn error occurred during video processing: {e}", file=sys.stderr)
     finally:
-        # --- Clean up the temporary file ---
-        if os.path.exists(temp_output_path):
-            os.remove(temp_output_path)
-            print(f"Cleaned up temporary file: {temp_output_path}")
+        # Clean up the temporary directory
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir)
         cv2.destroyAllWindows()
 
 
 def main():
-    """Main function to parse arguments and decide whether to process an image or a video."""
+    """Main function to parse arguments and run the processing pipeline."""
     args = parse_args()
 
+    # Set global settings for the face processing modules
     modules.globals.execution_providers = args.execution_provider
+    modules.globals.execution_threads = args.execution_threads
+    modules.globals.max_memory = args.max_memory
+    
+    # Load the requested frame processors
+    frame_processors = get_frame_processors_modules(args.frame_processors)
     
     if is_video(args.target_path):
-        print("Detected video target. Starting video processing.")
-        process_video(args.source_path, args.target_path, args.output_path)
+        process_video(args, frame_processors)
     else:
-        print("Detected image target. Starting image processing.")
-        process_image(args.source_path, args.target_path, args.output_path)
+        process_image(args, frame_processors)
+
 
 if __name__ == '__main__':
     main()
