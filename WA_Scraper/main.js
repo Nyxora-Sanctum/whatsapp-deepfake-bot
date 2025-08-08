@@ -213,7 +213,7 @@ async function runPythonScript(
                 ) {
                     lastReportedProgress = currentProgress;
                     const progressBar = createProgressBar(currentProgress);
-                    const messageText = `Santuy, AI gua lagi sat-set...\n\n${progressBar}\n\nSabar ye, kalo video emang butuh waktu lebih. Jangan di-spam, bro.`;
+                    const messageText = `Bentar yaa, Tunggu AI nya proses...\n\n${progressBar}\n\nKalo video emang butuh waktu lebih lama sih. Jadi tunggu dulu hehe.`;
                     try {
                         await loadingMessage.edit(messageText);
                     } catch (editError) {
@@ -255,7 +255,7 @@ async function runPythonScript(
                 );
                 try {
                     await loadingMessage.edit(
-                        "Udah kelar! Bentar, gua kirim hasilnya."
+                        "Udah selese! Bentar, aku kirim hasilnya."
                     );
                     await new Promise((res) => setTimeout(res, 1000));
 
@@ -269,7 +269,7 @@ async function runPythonScript(
                 } catch (sendError) {
                     console.error("Error sending message:", sendError);
                     await loadingMessage.edit(
-                        "Hell nah, filenya gagal kekirim. Coba lagi ntar, bro."
+                        "Hell nah, filenya gagal kekirim. coba lagi yaa kak."
                     );
                     reject(sendError);
                 } finally {
@@ -281,10 +281,10 @@ async function runPythonScript(
             } else {
                 console.error("Python script failed or output file not found.");
                 let userErrorMessage =
-                    "Njir, ada error pas proses. Coba lagi ntar ya, bro.";
+                    "Njir, ada error pas proses. Coba lagi ya.";
                 if (noFaceDetected) {
                     userErrorMessage =
-                        "Bjir, mukanya kaga keliatan di foto pertama. Coba pake foto lain dah. Yang lurus ke depan, jangan miring-miring kayak pembalap, dan jangan ketutupan apa-apa.";
+                        "Mukanya nggak keliatan di foto pertama. Coba pake foto lain deh. Yang lurus ke depan, jangan miring-miring, dan jangan ketutupan apa-apa.";
                 }
                 await loadingMessage.edit(userErrorMessage);
                 reject(
@@ -335,14 +335,14 @@ client.on("message", async (message) => {
             const tncMedia = MessageMedia.fromFilePath(tncPath);
             await client.sendMessage(
                 chatId,
-                "Woy, bro! Kenalan dulu. Baca TNC ini yak, penting biar sama-sama asik."
+                "Haloo, dibaca dulu ya syarat dan ketentuannya. Makasi."
             );
             await client.sendMessage(chatId, tncMedia);
         } else {
             console.warn("TNC.pdf not found in the script directory.");
             await client.sendMessage(
                 chatId,
-                "Woy, bro! Kenalin, gua bot AI buat tuker muka."
+                "Oh iya, datamu disini tetap privat ya, jadi nggaakan dijual/dipakai/disimpan."
             );
         }
 
@@ -350,13 +350,13 @@ client.on("message", async (message) => {
         saveUserDB();
 
         const welcomeMessage = `
-Gua bisa ngobrol santuy atau bikinin lo konten tuker muka di foto/video.
+Aku bisa ngubah muka orang di foto/video jadi muka orang lain.
 
 Kalo mau bikin, bilang aja, contoh:
-➡️ "bro, buatin gambar"
-➡️ "bikin video lucu dong"
+➡️ "Ubahin wajah di fotoku dongg"
+➡️ "Ubahin wajah di videoku yaa"
 
-Kalo mau ngobrol, ya ngobrol aja. Gasss!
+Kalo mau ngobrol dulu nggapapa kok!
         `;
         await client.sendMessage(chatId, welcomeMessage.trim());
         return;
