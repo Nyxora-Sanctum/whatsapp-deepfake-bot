@@ -181,7 +181,7 @@ async function runPythonScript(
     return new Promise((resolve, reject) => {
         const scriptDir = path.join(__dirname, "DL");
         // Point to your new Python script
-        const pythonScriptPath = path.join(scriptDir, "process_cpu.py");
+        const pythonScriptPath = path.join(scriptDir, "process_image.py");
 
         const tempDir = path.join(__dirname, "temp");
         const outputFilename = `output-${Date.now()}.${
