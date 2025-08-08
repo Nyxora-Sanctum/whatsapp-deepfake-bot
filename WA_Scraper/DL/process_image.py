@@ -27,7 +27,7 @@ def parse_args():
     program.add_argument('-o', '--output', help='Path for the output file', dest='output_path', required=True)
     
     # --- Quality & Feature Arguments ---
-    program.add_argument('--frame-processors', help='Processors to use (face_swapper, face_enhancer)', dest='frame_processors', default=['face_swapper', 'face_enhancer'], nargs='+')
+    program.add_argument('--frame-processors', help='Processors to use (face_swapper, face_enhancer)', dest='frame_processors', default=['face_swapper'], nargs='+')
     program.add_argument('--video-encoder', help='Adjust output video encoder', dest='video_encoder', default='libx264', choices=['libx264', 'libx265', 'libvpx-vp9'])
     program.add_argument('--video-quality', help='Adjust output video quality (0-51, lower is better)', dest='video_quality', type=int, default=18)
     
