@@ -9,6 +9,36 @@ require("dotenv").config(); // Load environment variables from .env file
 const ModelClient = require("@azure-rest/ai-inference").default;
 const { AzureKeyCredential } = require("@azure/core-auth");
 
+// --- NEW: User Database for Persistence ---
+const USER_DB_PATH = path.join(__dirname, "user_database.json");
+let userDB = {};
+
+// Load the user database from the file on startup
+try {
+    if (fs.existsSync(USER_DB_PATH)) {
+        const data = fs.readFileSync(USER_DB_PATH, "utf8");
+        userDB = JSON.parse(data);
+        console.log("User database loaded.");
+    } else {
+        console.log(
+            "No existing user database found, a new one will be created."
+        );
+    }
+} catch (err) {
+    console.error("Failed to load user database:", err);
+}
+
+/**
+ * Saves the current state of the user database to the JSON file.
+ */
+function saveUserDB() {
+    try {
+        fs.writeFileSync(USER_DB_PATH, JSON.stringify(userDB, null, 2));
+    } catch (err) {
+        console.error("Failed to save user database:", err);
+    }
+}
+
 // --- Client Initializations ---
 
 // Azure AI Client
@@ -27,7 +57,7 @@ const client = new Client({
     },
 });
 
-// This object keeps track of each user's multi-step progress
+// This object keeps track of each user's multi-step progress in memory
 const userStates = {};
 
 // --- Helper Functions ---
@@ -127,28 +157,23 @@ async function runPythonScript(
         ];
 
         console.log(`Calling Python script with args: ${args.join(" ")}`);
-
         const pythonProcess = spawn("python", args, { cwd: scriptDir });
+        let lastReportedProgress = -1;
 
-        let lastReportedProgress = -1; // To throttle message edits
-
-        // *** NEW: Listen to stdout for progress updates ***
         pythonProcess.stdout.on("data", async (data) => {
             const output = data.toString().trim();
             console.log("Python output:", output);
 
-            // IMPORTANT: This logic assumes your Python script prints progress like "PROGRESS:25"
             if (output.startsWith("PROGRESS:")) {
                 const currentProgress = parseInt(output.split(":")[1], 10);
-
-                // Only edit the message if progress changes by at least 5% to avoid rate-limiting
                 if (
                     currentProgress > lastReportedProgress + 4 &&
                     currentProgress < 100
                 ) {
                     lastReportedProgress = currentProgress;
                     const progressBar = createProgressBar(currentProgress);
-                    const messageText = `Oke, proses AI-nya dimulai! 🪄\n\n${progressBar}\n\nIni mungkin butuh waktu beberapa saat, jadi sabar ya. Terutama untuk video, bisa lebih lama. 🧘`;
+                    // MODIFIED: Gen Z style message
+                    const messageText = `Okee, AI-nya lagi kerja keras nih.\n\n${progressBar}\n\nBentar yaa, sabar dikit. Kalo video emang lebih lama prosesnya.`;
                     try {
                         await loadingMessage.edit(messageText);
                     } catch (editError) {
@@ -161,18 +186,15 @@ async function runPythonScript(
             }
         });
 
-        // Capture stderr separately to distinguish errors from progress
         let pythonErrorOutput = "";
         pythonProcess.stderr.on("data", (data) => {
             const errorText = data.toString().trim();
             console.error("Python error:", errorText);
-            pythonErrorOutput += errorText + "\n"; // Accumulate error messages
+            pythonErrorOutput += errorText + "\n";
         });
 
         pythonProcess.on("close", async (code) => {
             console.log(`Python script finished with code ${code}`);
-
-            // Clean up temporary input files immediately
             try {
                 if (fs.existsSync(sourceImagePath))
                     await fs.promises.unlink(sourceImagePath);
@@ -182,7 +204,6 @@ async function runPythonScript(
                 console.error("Failed to clean up input files:", cleanupError);
             }
 
-            // *** MODIFIED: Check for success or specific error messages ***
             const successful = code === 0 && fs.existsSync(outputAssetPath);
             const noFaceDetected =
                 pythonErrorOutput.includes("No face detected");
@@ -193,24 +214,27 @@ async function runPythonScript(
                     outputAssetPath
                 );
                 try {
+                    // MODIFIED: Gen Z style message
                     await loadingMessage.edit(
-                        "Berhasil! ✨ Lagi ngirim hasilnya ke kamu..."
+                        "Selesaii! Bentar yaa, hasilnya lagi dikirim."
                     );
-                    await new Promise((res) => setTimeout(res, 1000)); // Small delay for file system
+                    await new Promise((res) => setTimeout(res, 1000));
 
                     const outputMedia =
                         MessageMedia.fromFilePath(outputAssetPath);
                     await client.sendMessage(chatId, outputMedia, {
-                        caption: "Ini dia hasilnya, keren kan! 😎",
+                        // MODIFIED: Gen Z style message
+                        caption: "Nih hasilnya, gokil ga?",
                     });
                     console.log("Successfully sent media to", chatId);
-                    resolve(); // Resolve the promise on success
+                    resolve();
                 } catch (sendError) {
                     console.error("Error sending message:", sendError);
+                    // MODIFIED: Gen Z style message
                     await loadingMessage.edit(
-                        "Waduh, gagal ngirim filenya. Coba lagi nanti ya."
+                        "Yah, gagal kirim filenya. Coba lagi ntar ya."
                     );
-                    reject(sendError); // Reject on send error
+                    reject(sendError);
                 } finally {
                     if (fs.existsSync(outputAssetPath)) {
                         await fs.promises.unlink(outputAssetPath);
@@ -219,14 +243,14 @@ async function runPythonScript(
                 }
             } else {
                 console.error("Python script failed or output file not found.");
+                // MODIFIED: Gen Z style error messages
                 let userErrorMessage =
-                    "Waduh, ada yang error pas prosesnya. 😥 Coba lagi nanti ya.";
+                    "Duh, ada error nih pas proses. Coba lagi ntar yaa.";
                 if (noFaceDetected) {
                     userErrorMessage =
-                        "Waduh, gagal deteksi wajah di foto pertama. 😥 Pastiin wajahnya keliatan jelas, nggak miring, dan nggak ketutupan apa-apa ya. Coba lagi pake foto lain.";
+                        "Yah, ga kedeteksi wajahnya di foto pertama. Coba pake foto lain yang mukanya jelas, ga miring, dan ga ketutupan apa-apa.";
                 }
                 await loadingMessage.edit(userErrorMessage);
-                // *** MODIFIED: Reject with a more specific error ***
                 reject(
                     new Error(
                         noFaceDetected
@@ -253,6 +277,47 @@ client.on("message", async (message) => {
     const chatId = message.from;
     const lowerCaseBody = message.body.toLowerCase();
 
+    // --- NEW: Check for new user and send T&C ---
+    if (!userDB[chatId]) {
+        console.log(`New user detected: ${chatId}. Sending T&C.`);
+        const tncPath = path.join(__dirname, "TNC.pdf");
+
+        if (fs.existsSync(tncPath)) {
+            const tncMedia = MessageMedia.fromFilePath(tncPath);
+            // MODIFIED: Gen Z style message
+            await client.sendMessage(
+                chatId,
+                "Halo! Sebelum mulai, baca TNC dulu yaa. Penting nih biar sama-sama enak."
+            );
+            await client.sendMessage(chatId, tncMedia);
+        } else {
+            console.warn("TNC.pdf not found in the script directory.");
+            // MODIFIED: Gen Z style message
+            await client.sendMessage(
+                chatId,
+                "Halo! Kenalin aku bot AI buat tuker muka."
+            );
+        }
+
+        // Add user to DB and save
+        userDB[chatId] = { firstContact: new Date().toISOString() };
+        saveUserDB();
+
+        // Send the main welcome message after T&C
+        // MODIFIED: Gen Z style welcome message
+        const welcomeMessage = `
+Aku bisa nuker wajah di foto sama video.
+
+Mau coba? Gampang, tinggal bilang aja mau buat apa, contohnya:
+➡️ "bro, buatin gambar"
+➡️ "aku mau bikin video lucu"
+
+Nanti aku pandu langkah-langkahnya. Yuk mulai!
+        `;
+        await client.sendMessage(chatId, welcomeMessage.trim());
+        return; // Stop processing this message further
+    }
+
     // Check if the user is already in a process
     if (userStates[chatId]) {
         const currentState = userStates[chatId];
@@ -276,9 +341,10 @@ client.on("message", async (message) => {
                 currentState.faceImage = filepath;
                 currentState.state = `waiting_for_${currentState.type}`;
 
+                // MODIFIED: Gen Z style message
                 client.sendMessage(
                     chatId,
-                    `Sip, foto wajahnya udah kuterima! 👍\n\nSekarang, kirim ${assetTypeName} yang mau ditempelin wajah ini.`
+                    `Oke, fotonya udah masuk. Sekarang kirim ${assetTypeName} yang mau diganti mukanya.`
                 );
                 return;
             }
@@ -302,44 +368,44 @@ client.on("message", async (message) => {
                     });
                     currentState.mainAsset = filepath;
 
+                    // MODIFIED: Gen Z style message
                     const loadingMessage = await client.sendMessage(
                         chatId,
-                        "Oke, semua file lengkap! Proses dimulai... 🚀"
+                        "Sip, filenya lengkap. Prosesnya kumulai yaa."
                     );
 
-                    // *** NEW: Wrap script execution in try/catch to prevent crashing ***
                     try {
                         await runPythonScript(
                             chatId,
                             currentState.faceImage,
                             currentState.mainAsset,
                             currentState.type,
-                            loadingMessage // Pass the message object to be edited
+                            loadingMessage
                         );
                         console.log(
                             `Process for ${chatId} completed successfully.`
                         );
                     } catch (error) {
-                        // The error message is already sent to the user inside runPythonScript
                         console.error(
                             `Script execution failed for ${chatId}:`,
                             error.message
                         );
                     } finally {
-                        // *** NEW: Always reset state after completion or failure ***
-                        delete userStates[chatId];
+                        delete userStates[chatId]; // Always reset state
                     }
                 } else {
+                    // MODIFIED: Gen Z style message
                     client.sendMessage(
                         chatId,
-                        `Waduh, tipenya salah nih. Aku butuhnya file ${assetTypeName}, bukan ${mediaType}. Kirim yang bener ya.`
+                        `Eh, salah tipe file. Aku butuhnya ${assetTypeName}, bukan ${mediaType}. Kirim ulang yang bener yaa.`
                     );
                 }
             }
         } else {
+            // MODIFIED: Gen Z style message
             client.sendMessage(
                 chatId,
-                "Eh, jangan tulisan doang, kirimin aku file gambar atau video dong. 😊"
+                "Jangan chat doang, kirim file dongg. Mau gambar apa video?"
             );
         }
 
@@ -356,9 +422,10 @@ client.on("message", async (message) => {
                     mainAsset: null,
                     type: "image",
                 };
+                // MODIFIED: Gen Z style message
                 client.sendMessage(
                     chatId,
-                    "Asiik, kita bikin gambar ya! 🖼️\n\nYuk, pertama-tama kirim dulu foto close-up yang ada wajahnya."
+                    "Oke, kita bikin gambar ya. Pertama, kirim dulu satu foto muka yang jelas."
                 );
                 break;
 
@@ -369,19 +436,21 @@ client.on("message", async (message) => {
                     mainAsset: null,
                     type: "video",
                 };
+                // MODIFIED: Gen Z style message
                 client.sendMessage(
                     chatId,
-                    "Oke, kita bikin video! 🎥\n\nCoba kirim dulu satu foto yang ada wajahnya dengan jelas ya."
+                    "Gas, kita bikin video. Kirim dulu satu foto muka yang jelas yaa."
                 );
                 break;
 
             case "UNKNOWN":
             default:
+                // MODIFIED: Gen Z style welcome message
                 const welcomeMessage = `
-Halo! 👋 Aku bot AI yang bisa nuker wajah di foto dan video. Keren kan?
+Halo! Aku bot AI yang bisa nuker wajah di foto dan video.
 
-Mau coba? Gampang kok, tinggal bilang aja mau buat apa, contohnya:
-➡️ "bro, buatin gambar dong"
+Mau coba? Gampang, tinggal bilang aja mau buat apa, contohnya:
+➡️ "bro, buatin gambar"
 ➡️ "aku mau bikin video lucu"
 
 Nanti aku pandu langkah-langkahnya. Yuk mulai!
