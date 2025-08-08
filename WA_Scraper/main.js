@@ -147,7 +147,7 @@ async function runPythonScript(
                     const outputMedia =
                         MessageMedia.fromFilePath(outputAssetPath);
                     await client.sendMessage(chatId, outputMedia, {
-                        caption: "Here is your generated media!",
+                        caption: "Ini dia media yang sudah jadi!",
                     });
                     console.log("Successfully sent media to", chatId);
                     resolve();
@@ -164,7 +164,7 @@ async function runPythonScript(
                 console.error("Python script failed or output file not found.");
                 client.sendMessage(
                     chatId,
-                    "Something went wrong during processing. Please try again. 😔"
+                    "Terjadi kesalahan saat pemrosesan. Silakan coba lagi. 😔"
                 );
                 reject(new Error("Python script failed."));
             }
@@ -189,6 +189,9 @@ client.on("message", async (message) => {
     // Check if the user is already in a process (e.g., has sent the first image)
     if (userStates[chatId]) {
         const currentState = userStates[chatId];
+        // Helper for Indonesian asset type name
+        const assetTypeName =
+            currentState.type === "image" ? "gambar" : "video";
 
         if (message.hasMedia) {
             const media = await message.downloadMedia();
@@ -209,7 +212,7 @@ client.on("message", async (message) => {
 
                 client.sendMessage(
                     chatId,
-                    `Face received! 👍 Now, please send the ${currentState.type} you want to put the face on.`
+                    `Wajah diterima! 👍 Sekarang, silakan kirim ${assetTypeName} yang ingin ditempeli wajah.`
                 );
                 return;
 
@@ -234,7 +237,7 @@ client.on("message", async (message) => {
 
                     client.sendMessage(
                         chatId,
-                        "Processing your request. This might take a moment... ⏳"
+                        "Permintaan Anda sedang diproses. Mohon tunggu sebentar... ⏳"
                     );
                     await runPythonScript(
                         chatId,
@@ -247,14 +250,14 @@ client.on("message", async (message) => {
                 } else {
                     client.sendMessage(
                         chatId,
-                        `That's not the right file type. I was expecting a ${currentState.type}. Please send the correct file.`
+                        `Tipe filenya salah. Saya butuh sebuah ${assetTypeName}. Tolong kirim file yang benar.`
                     );
                 }
             }
         } else {
             client.sendMessage(
                 chatId,
-                "I was expecting a file. Please send an image or video."
+                "Saya butuh sebuah file. Tolong kirim gambar atau video."
             );
         }
 
@@ -273,7 +276,7 @@ client.on("message", async (message) => {
                 };
                 client.sendMessage(
                     chatId,
-                    "Great! Let's make an image. Please send me a picture with a face in it."
+                    "Oke! Kita buat gambar ya. Silakan kirim foto yang ada wajahnya."
                 );
                 break;
 
@@ -286,20 +289,20 @@ client.on("message", async (message) => {
                 };
                 client.sendMessage(
                     chatId,
-                    "Great! Let's make a video. Please send me a picture with a face in it."
+                    "Oke! Kita buat video ya. Silakan kirim foto yang ada wajahnya."
                 );
                 break;
 
             case "UNKNOWN":
             default:
                 const welcomeMessage = `
-Hello! 👋 I can swap faces in images and videos using AI.
+Halo! 👋 Saya bisa menukar wajah di foto dan video menggunakan AI.
 
-You can ask me things like:
-➡️ "Create a face swap image for me"
-➡️ "I want to make a video"
+Anda bisa bilang seperti ini:
+➡️ "Buatkan gambar tukar wajah"
+➡️ "Saya mau buat video"
 
-Just tell me what you'd like to do to begin!
+Katakan saja apa yang ingin Anda buat untuk memulai!
                 `;
                 client.sendMessage(chatId, welcomeMessage);
                 break;
