@@ -33,6 +33,18 @@ const userStates = {};
 // --- Helper Functions ---
 
 /**
+ * Creates a visual text-based progress bar.
+ * @param {number} percentage The progress percentage (0-100).
+ * @returns {string} The formatted progress bar string.
+ */
+function createProgressBar(percentage) {
+    const filledBlocks = Math.round(percentage / 10);
+    const emptyBlocks = 10 - filledBlocks;
+    const bar = "█".repeat(filledBlocks) + "░".repeat(emptyBlocks);
+    return `[${bar}] ${percentage}%`;
+}
+
+/**
  * Uses an LLM to determine the user's intent from their message.
  * @param {string} userMessage The message sent by the user.
  * @returns {Promise<"IMAGE"|"VIDEO"|"UNKNOWN">} The classified intent.
@@ -94,11 +106,6 @@ async function runPythonScript(
     loadingMessage
 ) {
     return new Promise(async (resolve, reject) => {
-        // Edit message to show processing has started
-        await loadingMessage.edit(
-            `Oke, proses AI-nya dimulai! 🪄\n\nIni mungkin butuh waktu beberapa saat, jadi sabar ya. Terutama untuk video, bisa lebih lama. 🧘`
-        );
-
         const scriptDir = path.join(__dirname, "DL");
         const pythonScriptPath = path.join(scriptDir, "process_image.py");
         const tempDir = path.join(__dirname, "temp");
@@ -123,17 +130,49 @@ async function runPythonScript(
 
         const pythonProcess = spawn("python", args, { cwd: scriptDir });
 
-        pythonProcess.stdout.on("data", (data) =>
-            console.log("Python output:", data.toString().trim())
-        );
-        pythonProcess.stderr.on("data", (data) =>
-            console.error("Python error:", data.toString().trim())
-        );
+        let lastReportedProgress = -1; // To throttle message edits
+
+        // *** NEW: Listen to stdout for progress updates ***
+        pythonProcess.stdout.on("data", async (data) => {
+            const output = data.toString().trim();
+            console.log("Python output:", output);
+
+            // IMPORTANT: This logic assumes your Python script prints progress like "PROGRESS:25"
+            if (output.startsWith("PROGRESS:")) {
+                const currentProgress = parseInt(output.split(":")[1], 10);
+
+                // Only edit the message if progress changes by at least 5% to avoid rate-limiting
+                if (
+                    currentProgress > lastReportedProgress + 4 &&
+                    currentProgress < 100
+                ) {
+                    lastReportedProgress = currentProgress;
+                    const progressBar = createProgressBar(currentProgress);
+                    const messageText = `Oke, proses AI-nya dimulai! 🪄\n\n${progressBar}\n\nIni mungkin butuh waktu beberapa saat, jadi sabar ya. Terutama untuk video, bisa lebih lama. 🧘`;
+                    try {
+                        await loadingMessage.edit(messageText);
+                    } catch (editError) {
+                        console.warn(
+                            "Could not edit loading message:",
+                            editError.message
+                        );
+                    }
+                }
+            }
+        });
+
+        // Capture stderr separately to distinguish errors from progress
+        let pythonErrorOutput = "";
+        pythonProcess.stderr.on("data", (data) => {
+            const errorText = data.toString().trim();
+            console.error("Python error:", errorText);
+            pythonErrorOutput += errorText + "\n"; // Accumulate error messages
+        });
 
         pythonProcess.on("close", async (code) => {
             console.log(`Python script finished with code ${code}`);
 
-            // Clean up temporary input files
+            // Clean up temporary input files immediately
             try {
                 if (fs.existsSync(sourceImagePath))
                     await fs.promises.unlink(sourceImagePath);
@@ -143,7 +182,12 @@ async function runPythonScript(
                 console.error("Failed to clean up input files:", cleanupError);
             }
 
-            if (code === 0 && fs.existsSync(outputAssetPath)) {
+            // *** MODIFIED: Check for success or specific error messages ***
+            const successful = code === 0 && fs.existsSync(outputAssetPath);
+            const noFaceDetected =
+                pythonErrorOutput.includes("No face detected");
+
+            if (successful) {
                 console.log(
                     "Python script successful! Output at:",
                     outputAssetPath
@@ -160,30 +204,36 @@ async function runPythonScript(
                         caption: "Ini dia hasilnya, keren kan! 😎",
                     });
                     console.log("Successfully sent media to", chatId);
-                    resolve();
+                    resolve(); // Resolve the promise on success
                 } catch (sendError) {
                     console.error("Error sending message:", sendError);
                     await loadingMessage.edit(
                         "Waduh, gagal ngirim filenya. Coba lagi nanti ya."
                     );
-                    reject(sendError);
+                    reject(sendError); // Reject on send error
                 } finally {
-                    // Clean up the output file and the loading message
                     if (fs.existsSync(outputAssetPath)) {
                         await fs.promises.unlink(outputAssetPath);
                     }
-                    await loadingMessage.delete(true); // Delete for everyone
+                    await loadingMessage.delete(true);
                 }
             } else {
                 console.error("Python script failed or output file not found.");
-                await loadingMessage.edit(
-                    "Waduh, ada yang error pas prosesnya. 😥 Kayaknya ada masalah sama gambarnya."
+                let userErrorMessage =
+                    "Waduh, ada yang error pas prosesnya. 😥 Coba lagi nanti ya.";
+                if (noFaceDetected) {
+                    userErrorMessage =
+                        "Waduh, gagal deteksi wajah di foto pertama. 😥 Pastiin wajahnya keliatan jelas, nggak miring, dan nggak ketutupan apa-apa ya. Coba lagi pake foto lain.";
+                }
+                await loadingMessage.edit(userErrorMessage);
+                // *** MODIFIED: Reject with a more specific error ***
+                reject(
+                    new Error(
+                        noFaceDetected
+                            ? "No face detected"
+                            : "Python script failed"
+                    )
                 );
-                client.sendMessage(
-                    chatId,
-                    "Gagal nih. Coba lagi pake gambar lain ya. Pastiin wajahnya keliatan jelas!"
-                );
-                reject(new Error("Python script failed."));
             }
         });
     });
@@ -252,21 +302,33 @@ client.on("message", async (message) => {
                     });
                     currentState.mainAsset = filepath;
 
-                    // Send the initial message that we will edit later
                     const loadingMessage = await client.sendMessage(
                         chatId,
-                        "Oke, semua file lengkap! Lagi disiapin dulu ya... 🚀"
+                        "Oke, semua file lengkap! Proses dimulai... 🚀"
                     );
 
-                    await runPythonScript(
-                        chatId,
-                        currentState.faceImage,
-                        currentState.mainAsset,
-                        currentState.type,
-                        loadingMessage // Pass the message object to be edited
-                    );
-
-                    delete userStates[chatId]; // Reset state after completion
+                    // *** NEW: Wrap script execution in try/catch to prevent crashing ***
+                    try {
+                        await runPythonScript(
+                            chatId,
+                            currentState.faceImage,
+                            currentState.mainAsset,
+                            currentState.type,
+                            loadingMessage // Pass the message object to be edited
+                        );
+                        console.log(
+                            `Process for ${chatId} completed successfully.`
+                        );
+                    } catch (error) {
+                        // The error message is already sent to the user inside runPythonScript
+                        console.error(
+                            `Script execution failed for ${chatId}:`,
+                            error.message
+                        );
+                    } finally {
+                        // *** NEW: Always reset state after completion or failure ***
+                        delete userStates[chatId];
+                    }
                 } else {
                     client.sendMessage(
                         chatId,

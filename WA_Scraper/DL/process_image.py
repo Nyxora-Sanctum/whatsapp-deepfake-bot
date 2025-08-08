@@ -5,6 +5,7 @@ import cv2
 import subprocess
 import shutil
 import multiprocessing
+import sys
 
 # --- Core Application Imports ---
 try:
@@ -95,7 +96,8 @@ def process_video(args, frame_processors):
             print("Error: Could not read the source image file.", file=sys.stderr)
             return
 
-        source_face = get_one_face(source_image)
+        # Assuming get_one_face is defined elsewhere
+        source_face = get_one_face(source_image) 
         if source_face is None:
             print("Error: No face detected in the source image.", file=sys.stderr)
             return
@@ -121,8 +123,18 @@ def process_video(args, frame_processors):
                 break
             
             frame_number += 1
-            print(f"Processing frame {frame_number}/{frame_count}...", end='\r')
             
+            # --- MODIFICATION START ---
+            # Calculate and print progress for Node.js
+            if frame_count > 0:
+                percentage = int((frame_number / frame_count) * 100)
+                # This specific format is read by the Node.js script
+                print(f"PROGRESS:{percentage}")
+                # Flush the output to ensure it's sent immediately
+                sys.stdout.flush() 
+            # --- MODIFICATION END ---
+            
+            # Assuming process_frames is defined elsewhere
             processed_frame = process_frames(source_face, frame, frame_processors)
             out.write(processed_frame if processed_frame is not None else frame)
 
@@ -146,19 +158,22 @@ def process_video(args, frame_processors):
             args.output_path
         ]
         
-        subprocess.run(ffmpeg_command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # Using DEVNULL to hide ffmpeg's own progress output from our main stdout
+        subprocess.run(ffmpeg_command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         
         print(f"Video successfully processed and saved to {args.output_path}")
 
     except Exception as e:
-        print(f"\nAn error occurred during video processing: {e}", file=sys.stderr)
+        # Check if the error is from the subprocess and print its stderr
+        if isinstance(e, subprocess.CalledProcessError) and e.stderr:
+            print(f"\nAn error occurred during FFmpeg encoding: {e.stderr.decode()}", file=sys.stderr)
+        else:
+            print(f"\nAn error occurred during video processing: {e}", file=sys.stderr)
     finally:
         # Clean up the temporary directory
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
         cv2.destroyAllWindows()
-
-
 def main():
     """Main function to parse arguments and run the processing pipeline."""
     args = parse_args()
