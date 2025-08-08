@@ -51,8 +51,8 @@ async function getIntent(userMessage) {
                         content: `What is the intent of this message? Message: "${userMessage}"`,
                     },
                 ],
-                max_tokens: 10, // Small value is efficient for a single-word reply
-                temperature: 0.1, // Low temperature for deterministic classification
+                max_tokens: 10,
+                temperature: 0.1,
                 model: modelName,
             },
         });
@@ -78,21 +78,28 @@ async function getIntent(userMessage) {
 }
 
 /**
- * Runs the Python face-swapping script.
+ * Runs the Python face-swapping script and provides real-time updates.
  * @param {string} chatId The user's chat ID.
  * @param {string} sourceImagePath Path to the source face image.
  * @param {string} targetAssetPath Path to the target image or video.
  * @param {string} assetType The type of asset, either "image" or "video".
+ * @param {import('whatsapp-web.js').Message} loadingMessage The message to edit for status updates.
  * @returns {Promise<void>}
  */
 async function runPythonScript(
     chatId,
     sourceImagePath,
     targetAssetPath,
-    assetType
+    assetType,
+    loadingMessage
 ) {
-    return new Promise((resolve, reject) => {
-        const scriptDir = path.join(__dirname, "DL"); // Directory of the Python script
+    return new Promise(async (resolve, reject) => {
+        // Edit message to show processing has started
+        await loadingMessage.edit(
+            `Oke, proses AI-nya dimulai! 🪄\n\nIni mungkin butuh waktu beberapa saat, jadi sabar ya. Terutama untuk video, bisa lebih lama. 🧘`
+        );
+
+        const scriptDir = path.join(__dirname, "DL");
         const pythonScriptPath = path.join(scriptDir, "process_image.py");
         const tempDir = path.join(__dirname, "temp");
         const outputFilename = `output-${Date.now()}.${
@@ -114,7 +121,6 @@ async function runPythonScript(
 
         console.log(`Calling Python script with args: ${args.join(" ")}`);
 
-        // Spawn the process with the correct working directory ('cwd')
         const pythonProcess = spawn("python", args, { cwd: scriptDir });
 
         pythonProcess.stdout.on("data", (data) =>
@@ -143,28 +149,39 @@ async function runPythonScript(
                     outputAssetPath
                 );
                 try {
+                    await loadingMessage.edit(
+                        "Berhasil! ✨ Lagi ngirim hasilnya ke kamu..."
+                    );
                     await new Promise((res) => setTimeout(res, 1000)); // Small delay for file system
+
                     const outputMedia =
                         MessageMedia.fromFilePath(outputAssetPath);
                     await client.sendMessage(chatId, outputMedia, {
-                        caption: "Ini dia media yang sudah jadi!",
+                        caption: "Ini dia hasilnya, keren kan! 😎",
                     });
                     console.log("Successfully sent media to", chatId);
                     resolve();
                 } catch (sendError) {
                     console.error("Error sending message:", sendError);
+                    await loadingMessage.edit(
+                        "Waduh, gagal ngirim filenya. Coba lagi nanti ya."
+                    );
                     reject(sendError);
                 } finally {
-                    // Clean up the output file after sending
+                    // Clean up the output file and the loading message
                     if (fs.existsSync(outputAssetPath)) {
                         await fs.promises.unlink(outputAssetPath);
                     }
+                    await loadingMessage.delete(true); // Delete for everyone
                 }
             } else {
                 console.error("Python script failed or output file not found.");
+                await loadingMessage.edit(
+                    "Waduh, ada yang error pas prosesnya. 😥 Kayaknya ada masalah sama gambarnya."
+                );
                 client.sendMessage(
                     chatId,
-                    "Terjadi kesalahan saat pemrosesan. Silakan coba lagi. 😔"
+                    "Gagal nih. Coba lagi pake gambar lain ya. Pastiin wajahnya keliatan jelas!"
                 );
                 reject(new Error("Python script failed."));
             }
@@ -186,10 +203,9 @@ client.on("message", async (message) => {
     const chatId = message.from;
     const lowerCaseBody = message.body.toLowerCase();
 
-    // Check if the user is already in a process (e.g., has sent the first image)
+    // Check if the user is already in a process
     if (userStates[chatId]) {
         const currentState = userStates[chatId];
-        // Helper for Indonesian asset type name
         const assetTypeName =
             currentState.type === "image" ? "gambar" : "video";
 
@@ -208,16 +224,17 @@ client.on("message", async (message) => {
 
                 fs.writeFileSync(filepath, media.data, { encoding: "base64" });
                 currentState.faceImage = filepath;
-                currentState.state = `waiting_for_${currentState.type}`; // Move to next state
+                currentState.state = `waiting_for_${currentState.type}`;
 
                 client.sendMessage(
                     chatId,
-                    `Wajah diterima! 👍 Sekarang, silakan kirim ${assetTypeName} yang ingin ditempeli wajah.`
+                    `Sip, foto wajahnya udah kuterima! 👍\n\nSekarang, kirim ${assetTypeName} yang mau ditempelin wajah ini.`
                 );
                 return;
+            }
 
-                // State 2: Waiting for the target image/video
-            } else if (
+            // State 2: Waiting for the target image/video
+            else if (
                 currentState.state === `waiting_for_${currentState.type}`
             ) {
                 const isCorrectType =
@@ -235,33 +252,36 @@ client.on("message", async (message) => {
                     });
                     currentState.mainAsset = filepath;
 
-                    client.sendMessage(
+                    // Send the initial message that we will edit later
+                    const loadingMessage = await client.sendMessage(
                         chatId,
-                        "Permintaan Anda sedang diproses. Mohon tunggu sebentar... ⏳"
+                        "Oke, semua file lengkap! Lagi disiapin dulu ya... 🚀"
                     );
+
                     await runPythonScript(
                         chatId,
                         currentState.faceImage,
                         currentState.mainAsset,
-                        currentState.type
+                        currentState.type,
+                        loadingMessage // Pass the message object to be edited
                     );
 
                     delete userStates[chatId]; // Reset state after completion
                 } else {
                     client.sendMessage(
                         chatId,
-                        `Tipe filenya salah. Saya butuh sebuah ${assetTypeName}. Tolong kirim file yang benar.`
+                        `Waduh, tipenya salah nih. Aku butuhnya file ${assetTypeName}, bukan ${mediaType}. Kirim yang bener ya.`
                     );
                 }
             }
         } else {
             client.sendMessage(
                 chatId,
-                "Saya butuh sebuah file. Tolong kirim gambar atau video."
+                "Eh, jangan tulisan doang, kirimin aku file gambar atau video dong. 😊"
             );
         }
 
-        // If the user is NOT in a process, use the LLM to understand their initial message
+        // If the user is NOT in a process, use the LLM to understand them
     } else {
         const intent = await getIntent(lowerCaseBody);
         console.log(`User: "${lowerCaseBody}" -> Intent: ${intent}`);
@@ -276,7 +296,7 @@ client.on("message", async (message) => {
                 };
                 client.sendMessage(
                     chatId,
-                    "Oke! Kita buat gambar ya. Silakan kirim foto yang ada wajahnya."
+                    "Asiik, kita bikin gambar ya! 🖼️\n\nYuk, pertama-tama kirim dulu foto close-up yang ada wajahnya."
                 );
                 break;
 
@@ -289,22 +309,22 @@ client.on("message", async (message) => {
                 };
                 client.sendMessage(
                     chatId,
-                    "Oke! Kita buat video ya. Silakan kirim foto yang ada wajahnya."
+                    "Oke, kita bikin video! 🎥\n\nCoba kirim dulu satu foto yang ada wajahnya dengan jelas ya."
                 );
                 break;
 
             case "UNKNOWN":
             default:
                 const welcomeMessage = `
-Halo! 👋 Saya bisa menukar wajah di foto dan video menggunakan AI.
+Halo! 👋 Aku bot AI yang bisa nuker wajah di foto dan video. Keren kan?
 
-Anda bisa bilang seperti ini:
-➡️ "Buatkan gambar tukar wajah"
-➡️ "Saya mau buat video"
+Mau coba? Gampang kok, tinggal bilang aja mau buat apa, contohnya:
+➡️ "bro, buatin gambar dong"
+➡️ "aku mau bikin video lucu"
 
-Katakan saja apa yang ingin Anda buat untuk memulai!
+Nanti aku pandu langkah-langkahnya. Yuk mulai!
                 `;
-                client.sendMessage(chatId, welcomeMessage);
+                client.sendMessage(chatId, welcomeMessage.trim());
                 break;
         }
     }
