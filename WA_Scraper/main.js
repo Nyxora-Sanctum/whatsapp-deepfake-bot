@@ -5,7 +5,7 @@ const { spawn } = require("child_process");
 const path = require("path");
 
 // --- LLM Integration ---
-require("dotenv").config(); // Load environment variables from .env file
+require("dotenv").config();
 const ModelClient = require("@azure-rest/ai-inference").default;
 const { AzureKeyCredential } = require("@azure/core-auth");
 
@@ -13,7 +13,6 @@ const { AzureKeyCredential } = require("@azure/core-auth");
 const USER_DB_PATH = path.join(__dirname, "user_database.json");
 let userDB = {};
 
-// Load the user database from the file on startup
 try {
     if (fs.existsSync(USER_DB_PATH)) {
         const data = fs.readFileSync(USER_DB_PATH, "utf8");
@@ -28,9 +27,6 @@ try {
     console.error("Failed to load user database:", err);
 }
 
-/**
- * Saves the current state of the user database to the JSON file.
- */
 function saveUserDB() {
     try {
         fs.writeFileSync(USER_DB_PATH, JSON.stringify(userDB, null, 2));
@@ -40,27 +36,22 @@ function saveUserDB() {
 }
 
 // --- Client Initializations ---
-
-// Azure AI Client
 const modelName = "Llama-3.3-70B-Instruct";
 const aiClient = new ModelClient(
     process.env.AZURE_AI_ENDPOINT,
     new AzureKeyCredential(process.env.AZURE_AI_API_KEY)
 );
 
-// WhatsApp Client
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
-        executablePath: "/usr/bin/google-chrome", // Adjust this path if necessary
+        executablePath: "/usr/bin/google-chrome",
         args: ["--no-sandbox", "--disable-setuid-sandbox"],
     },
 });
 
-// This object keeps track of each user's multi-step progress in memory
-const userStates = {};
-// This object keeps track of recent chat history for each user
-const chatHistories = {};
+const userStates = {}; // In-memory state for multi-step processes
+const chatHistories = {}; // In-memory chat history
 const CHAT_HISTORY_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
 
 // --- Helper Functions ---
@@ -78,13 +69,45 @@ function createProgressBar(percentage) {
 }
 
 /**
- * Uses an LLM to determine the user's intent from their message.
- * @param {string} userMessage The message sent by the user.
- * @returns {Promise<"IMAGE"|"VIDEO"|"CHITCHAT"|"UNKNOWN">} The classified intent.
+ * **[NEW & IMPROVED]** Uses an LLM to determine the user's intent, aware of the current conversation context.
+ * @param {import('whatsapp-web.js').Message} message The incoming message object.
+ * @param {object|null} currentUserState The user's current state from userStates.
+ * @returns {Promise<string>} The classified intent (e.g., "START_IMAGE", "CANCEL", "CHITCHAT").
  */
-async function getIntent(userMessage) {
-    const systemPrompt =
-        "You are a classification assistant for a WhatsApp bot. Analyze the user's message to determine their intent. You must respond with only one of these three words: IMAGE, VIDEO, or CHITCHAT. If the user asks to create a picture, photo, or image, respond with IMAGE. If they ask to create a video or clip, respond with VIDEO. For any other conversation, greeting, or question, respond with CHITCHAT.";
+async function classifyUserIntent(message, currentUserState) {
+    const userMessage = message.body;
+
+    let systemPrompt;
+    // The prompt changes based on whether the user is in the middle of a process.
+    if (currentUserState) {
+        // --- CONTEXT-AWARE PROMPT ---
+        systemPrompt = `You are a classification assistant for a WhatsApp bot that is currently in the middle of a task with a user. The user is in the '${currentUserState.state}' step of a '${currentUserState.type}' creation process. Analyze the user's latest message.
+
+        Possible intents are:
+        - CANCEL: User wants to stop, cancel, or quit the current process. Keywords: "cancel", "batal", "stop", "gajadi".
+        - SWITCH_TO_IMAGE: User explicitly asks to switch to making an image instead.
+        - SWITCH_TO_VIDEO: User explicitly asks to switch to making a video instead.
+        - PROVIDE_MEDIA: User has sent a file (image or video). You should ONLY return this if the message contains media.
+        - CHITCHAT: Any other question, comment, or conversation not related to the above.
+
+        Respond with ONLY one of the intent names from the list above.`;
+    } else {
+        // --- GENERAL PROMPT ---
+        systemPrompt = `You are a classification assistant for a WhatsApp bot. Analyze the user's message to determine their primary intent.
+
+        Possible intents are:
+        - START_IMAGE: User wants to create or generate a picture, photo, or image.
+        - START_VIDEO: User wants to create or generate a video or clip.
+        - CHITCHAT: Any other conversation, greeting, question, or statement.
+
+        Respond with ONLY one of the intent names: START_IMAGE, START_VIDEO, or CHITCHAT.`;
+    }
+
+    // If the user sent media, the intent is almost certainly to provide it for the process.
+    // This avoids an unnecessary LLM call and provides a faster response.
+    if (currentUserState && message.hasMedia) {
+        return "PROVIDE_MEDIA";
+    }
 
     try {
         const response = await aiClient.path("/chat/completions").post({
@@ -93,10 +116,10 @@ async function getIntent(userMessage) {
                     { role: "system", content: systemPrompt },
                     {
                         role: "user",
-                        content: `Classify the intent of this message: "${userMessage}"`,
+                        content: `Classify this message: "${userMessage}"`,
                     },
                 ],
-                max_tokens: 10,
+                max_tokens: 15,
                 temperature: 0.1,
                 model: modelName,
             },
@@ -104,21 +127,19 @@ async function getIntent(userMessage) {
 
         if (response.status !== "200") {
             console.error("Azure AI Error:", response.body.error);
-            return "UNKNOWN";
+            return "CHITCHAT"; // Default to CHITCHAT on error
         }
 
         const intent = response.body.choices[0].message.content
             .trim()
             .toUpperCase();
-
-        if (["IMAGE", "VIDEO", "CHITCHAT"].includes(intent)) {
-            return intent;
-        }
-
-        return "UNKNOWN";
+        console.log(
+            `Message: "${userMessage}" -> Classified Intent: ${intent}`
+        );
+        return intent;
     } catch (err) {
         console.error("The intent detection encountered an error:", err);
-        return "UNKNOWN";
+        return "CHITCHAT"; // Default to CHITCHAT on error
     }
 }
 
@@ -132,6 +153,7 @@ async function getChatResponse(userMessage, history) {
     const systemPrompt =
         "You are a friendly and helpful WhatsApp bot with a 'soft boy' personality. You speak like a kind Gen Z Indonesian. Use 'aku' for yourself and 'kamu' for the user. Absolutely NEVER use 'lo' or 'gue'. Your vocabulary includes soft, modern slang like 'gemes', 'lucu banget', 'ih', 'hehe', 'wkwk', 'santuy', 'semangat ya', 'gapapa kok'. Keep your responses short, sweet, and conversational, like you're texting a close friend. Your main job is to chat, but you can also create images and videos if asked. Right now, your only task is to respond to the user's latest message based on the conversation history.";
 
+    // The history is already being passed correctly here.
     const messages = [
         { role: "system", content: systemPrompt },
         ...history.map((h) => ({ role: h.role, content: h.content })),
@@ -161,6 +183,7 @@ async function getChatResponse(userMessage, history) {
 
 /**
  * Runs the Python face-swapping script and provides real-time updates.
+ * (This function remains unchanged as its internal logic is sound)
  * @param {string} chatId The user's chat ID.
  * @param {string} sourceImagePath Path to the source face image.
  * @param {string} targetAssetPath Path to the target image or video.
@@ -298,6 +321,83 @@ async function runPythonScript(
     });
 }
 
+/**
+ * **[NEW]** Handles the logic for processing media sent by the user during a task.
+ * @param {import('whatsapp-web.js').Message} message The incoming message object with media.
+ */
+async function handleMediaProvision(message) {
+    const chatId = message.from;
+    const currentState = userStates[chatId];
+    if (!currentState) return; // Safety check
+
+    const assetTypeName = currentState.type === "image" ? "gambar" : "video";
+    const media = await message.downloadMedia();
+    const mediaType = media.mimetype.split("/")[0];
+
+    // State 1: Waiting for the face image
+    if (currentState.state === "waiting_for_face") {
+        const filename = `face-${Date.now()}.${media.mimetype.split("/")[1]}`;
+        const tempDir = path.join(__dirname, "temp");
+        if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
+        const filepath = path.join(tempDir, filename);
+
+        fs.writeFileSync(filepath, media.data, { encoding: "base64" });
+        currentState.faceImage = filepath;
+        currentState.state = `waiting_for_${currentState.type}`;
+
+        client.sendMessage(
+            chatId,
+            `Oke, foto muka dapet. Sekarang kirim ${assetTypeName} targetnya yaa.`
+        );
+        return;
+    }
+
+    // State 2: Waiting for the target image/video
+    else if (currentState.state === `waiting_for_${currentState.type}`) {
+        const isCorrectType =
+            (currentState.type === "image" && mediaType === "image") ||
+            (currentState.type === "video" && mediaType === "video");
+
+        if (isCorrectType) {
+            const filename = `${currentState.type}-${Date.now()}.${
+                media.mimetype.split("/")[1]
+            }`;
+            const tempDir = path.join(__dirname, "temp");
+            const filepath = path.join(tempDir, filename);
+            fs.writeFileSync(filepath, media.data, { encoding: "base64" });
+            currentState.mainAsset = filepath;
+
+            const loadingMessage = await client.sendMessage(
+                chatId,
+                "Sip, bahan lengkap. Aku proses dulu ya, sabar..."
+            );
+
+            try {
+                await runPythonScript(
+                    chatId,
+                    currentState.faceImage,
+                    currentState.mainAsset,
+                    currentState.type,
+                    loadingMessage
+                );
+                console.log(`Process for ${chatId} completed successfully.`);
+            } catch (error) {
+                console.error(
+                    `Script execution failed for ${chatId}:`,
+                    error.message
+                );
+            } finally {
+                delete userStates[chatId]; // Always reset state after completion or failure
+            }
+        } else {
+            client.sendMessage(
+                chatId,
+                `Ih, itu kan ${mediaType}. Aku butuhnya ${assetTypeName}, kamu salah kirim hehe. Kirim ulang yang bener ya.`
+            );
+        }
+    }
+}
+
 // --- WhatsApp Client Event Handlers ---
 
 client.on("ready", () => {
@@ -310,10 +410,10 @@ client.on("qr", (qr) => {
 
 client.on("message", async (message) => {
     const chatId = message.from;
-    const lowerCaseBody = message.body.toLowerCase();
     const now = Date.now();
+    const currentUserState = userStates[chatId];
 
-    // --- History Management: Clear history if older than 15 mins ---
+    // --- History Management ---
     if (chatHistories[chatId] && chatHistories[chatId].length > 0) {
         const firstMessageTimestamp = chatHistories[chatId][0].timestamp;
         if (now - firstMessageTimestamp > CHAT_HISTORY_TIMEOUT_MS) {
@@ -329,7 +429,6 @@ client.on("message", async (message) => {
     if (!userDB[chatId]) {
         console.log(`New user detected: ${chatId}. Sending T&C.`);
         const tncPath = path.join(__dirname, "TNC.pdf");
-
         if (fs.existsSync(tncPath)) {
             const tncMedia = MessageMedia.fromFilePath(tncPath);
             await client.sendMessage(
@@ -344,10 +443,8 @@ client.on("message", async (message) => {
                 "Oh iya, datamu disini tetap privat ya, jadi nggaakan dijual/dipakai/disimpan."
             );
         }
-
         userDB[chatId] = { firstContact: new Date().toISOString() };
         saveUserDB();
-
         const welcomeMessage = `
 Aku bisa ngubah muka orang di foto/video jadi muka orang lain.
 
@@ -355,212 +452,150 @@ Kalo mau bikin, bilang aja, contoh:
 ➡️ "Ubahin wajah di fotoku dongg"
 ➡️ "Ubahin wajah di videoku yaa"
 
-Kalo mau ngobrol dulu nggapapa kok!
-        `;
+Kalo mau ngobrol dulu nggapapa kok!`;
         await client.sendMessage(chatId, welcomeMessage.trim());
         return;
     }
 
-    // --- Handle Active Generation Process WITH Cancellation/Switching ---
-    if (userStates[chatId]) {
-        // --- Check for text commands (cancel/switch) before checking for media ---
-        if (!message.hasMedia) {
-            const cancelKeywords = [
-                "cancel",
-                "batal",
-                "stop",
-                "gajadi",
-                "berhenti",
-            ];
-            // 1. Check for cancellation
-            if (
-                cancelKeywords.some((keyword) =>
-                    lowerCaseBody.includes(keyword)
-                )
-            ) {
-                console.log(`Process cancelled by user ${chatId}.`);
-                await client.sendMessage(
-                    chatId,
-                    "Oke, prosesnya aku batalin ya. Kalo mau mulai lagi, bilang aja hehe. 😊"
-                );
-                delete userStates[chatId]; // Clear the state
-                return; // Stop further processing
-            }
+    // --- CENTRALIZED INTENT CLASSIFICATION ---
+    // Every message is classified here first.
+    const intent = await classifyUserIntent(message, currentUserState);
 
-            // 2. Check for an intent switch
-            const newIntent = await getIntent(lowerCaseBody);
-            if (
-                (newIntent === "IMAGE" || newIntent === "VIDEO") &&
-                newIntent.toLowerCase() !== userStates[chatId].type
-            ) {
-                console.log(
-                    `User ${chatId} switching from ${userStates[chatId].type} to ${newIntent}.`
-                );
-                await client.sendMessage(
-                    chatId,
-                    `Oke, kita ganti ya. Batalin yang ${
-                        userStates[chatId].type
-                    }, sekarang kita mulai buat ${newIntent.toLowerCase()} baru.`
-                );
-                delete userStates[chatId]; // Clear the old state to start a new one
-                // Do NOT return, let the code fall through to the main intent handler
-            } else {
-                // 3. If it's just random text, remind the user what to do
-                await client.sendMessage(
-                    chatId,
-                    "Lagi nungguin file nih, bukan ketikan. Kirim fotonya dong, atau bilang 'batal' kalo ngga jadi. Semangat yaa!"
-                );
-                return;
-            }
-        }
-
-        // --- This part now only runs if a state was NOT cleared above ---
-        if (userStates[chatId] && message.hasMedia) {
-            const currentState = userStates[chatId];
-            const assetTypeName =
-                currentState.type === "image" ? "gambar" : "video";
-            const media = await message.downloadMedia();
-            const mediaType = media.mimetype.split("/")[0];
-
-            // State 1: Waiting for the face image
-            if (currentState.state === "waiting_for_face") {
-                const filename = `face-${Date.now()}.${
-                    media.mimetype.split("/")[1]
-                }`;
-                const tempDir = path.join(__dirname, "temp");
-                if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
-                const filepath = path.join(tempDir, filename);
-
-                fs.writeFileSync(filepath, media.data, { encoding: "base64" });
-                currentState.faceImage = filepath;
-                currentState.state = `waiting_for_${currentState.type}`;
-
-                client.sendMessage(
-                    chatId,
-                    `Oke, foto muka dapet. Sekarang kirim ${assetTypeName} targetnya yaa.`
-                );
-                return;
-            }
-
-            // State 2: Waiting for the target image/video
-            else if (
-                currentState.state === `waiting_for_${currentState.type}`
-            ) {
-                const isCorrectType =
-                    (currentState.type === "image" && mediaType === "image") ||
-                    (currentState.type === "video" && mediaType === "video");
-
-                if (isCorrectType) {
-                    const filename = `${currentState.type}-${Date.now()}.${
-                        media.mimetype.split("/")[1]
-                    }`;
-                    const tempDir = path.join(__dirname, "temp");
-                    const filepath = path.join(tempDir, filename);
-                    fs.writeFileSync(filepath, media.data, {
-                        encoding: "base64",
-                    });
-                    currentState.mainAsset = filepath;
-
-                    const loadingMessage = await client.sendMessage(
-                        chatId,
-                        "Sip, bahan lengkap. Aku proses dulu ya, sabar..."
-                    );
-
-                    try {
-                        await runPythonScript(
-                            chatId,
-                            currentState.faceImage,
-                            currentState.mainAsset,
-                            currentState.type,
-                            loadingMessage
-                        );
-                        console.log(
-                            `Process for ${chatId} completed successfully.`
-                        );
-                    } catch (error) {
-                        console.error(
-                            `Script execution failed for ${chatId}:`,
-                            error.message
-                        );
-                    } finally {
-                        delete userStates[chatId]; // Always reset state
-                    }
-                } else {
-                    client.sendMessage(
-                        chatId,
-                        `Ih, itu kan ${mediaType}. Aku butuhnya ${assetTypeName}, kamu salah kirim hehe. Kirim ulang yang bener ya.`
-                    );
-                }
-            }
-            return; // Stop further processing after handling media
-        }
-    }
-
-    // --- If not in a process, determine intent (Chit-chat, Image, Video) ---
-    const intent = await getIntent(lowerCaseBody);
-    console.log(`User: "${lowerCaseBody}" -> Intent: ${intent}`);
-
-    // Add user message to history AFTER intent classification but BEFORE response generation
+    // Add user message to history AFTER intent classification
     chatHistories[chatId].push({
         role: "user",
         content: message.body,
         timestamp: now,
     });
 
+    // --- Main Logic Router based on Intent ---
     switch (intent) {
-        case "IMAGE":
+        case "START_IMAGE":
             userStates[chatId] = {
                 state: "waiting_for_face",
                 faceImage: null,
                 mainAsset: null,
                 type: "image",
             };
-            client.sendMessage(
+            await client.sendMessage(
                 chatId,
                 "Oke siap, kita buatin gambarnya. Kirimin aku satu foto muka kamu yang jelas yaa, biar hasilnya bagus."
             );
             break;
 
-        case "VIDEO":
+        case "START_VIDEO":
             userStates[chatId] = {
                 state: "waiting_for_face",
                 faceImage: null,
                 mainAsset: null,
                 type: "video",
             };
-            client.sendMessage(
+            await client.sendMessage(
                 chatId,
                 "Asik, bikin video! Boleh minta satu foto muka kamu yang jelas dulu, hehe."
             );
             break;
 
-        case "CHITCHAT":
-        case "UNKNOWN": // Treat UNKNOWN as CHITCHAT
-        default:
-            try {
-                if (Math.random() < 0.3) {
-                    const softBoyEmojis = ["👍", "😊", "✨", "🥺", "❤️", "✅"];
-                    const randomEmoji =
-                        softBoyEmojis[
-                            Math.floor(Math.random() * softBoyEmojis.length)
-                        ];
-                    await message.react(randomEmoji);
-                }
-            } catch (e) {
-                console.warn("Couldn't react to message:", e.message);
+        case "PROVIDE_MEDIA":
+            // This case is only reachable if the user is in an active state and sends media.
+            if (currentUserState) {
+                await handleMediaProvision(message);
+            } else {
+                // This case should not be reached if no state, but as a fallback, treat as chitchat
+                await client.sendMessage(
+                    chatId,
+                    "Hmm, kamu ngirim file tapi aku lagi ngga nungguin apa-apa. Mau buat sesuatu kah?"
+                );
             }
+            break;
 
-            const reply = await getChatResponse(
-                message.body,
-                chatHistories[chatId]
+        case "CANCEL":
+            if (currentUserState) {
+                delete userStates[chatId]; // Clear the state
+                await client.sendMessage(
+                    chatId,
+                    "Oke, prosesnya aku batalin ya. Kalo mau mulai lagi, bilang aja hehe. 😊"
+                );
+            } else {
+                await client.sendMessage(
+                    chatId,
+                    "Ngga ada proses yang lagi jalan kok, jadi santuy aja hehe."
+                );
+            }
+            break;
+
+        case "SWITCH_TO_IMAGE":
+            if (currentUserState) {
+                await client.sendMessage(
+                    chatId,
+                    `Oke, kita ganti ya. Batalin yang ${currentUserState.type}, sekarang kita mulai buat image baru.`
+                );
+            }
+            // Start the image process from scratch
+            userStates[chatId] = { state: "waiting_for_face", type: "image" };
+            await client.sendMessage(
+                chatId,
+                "Oke, kita mulai dari awal buat gambar ya. Kirimin aku foto muka kamu yang jelas."
             );
-            await client.sendMessage(chatId, reply);
+            break;
 
-            chatHistories[chatId].push({
-                role: "assistant",
-                content: reply,
-                timestamp: now,
-            });
+        case "SWITCH_TO_VIDEO":
+            if (currentUserState) {
+                await client.sendMessage(
+                    chatId,
+                    `Oke, kita ganti ya. Batalin yang ${currentUserState.type}, sekarang kita mulai buat video baru.`
+                );
+            }
+            // Start the video process from scratch
+            userStates[chatId] = { state: "waiting_for_face", type: "video" };
+            await client.sendMessage(
+                chatId,
+                "Oke, kita mulai dari awal buat video ya. Kirimin aku foto muka kamu yang jelas."
+            );
+            break;
+
+        case "CHITCHAT":
+        default: // Also handles UNKNOWN
+            if (currentUserState) {
+                // If the user is chitchatting during a process, remind them what's needed.
+                await client.sendMessage(
+                    chatId,
+                    "Lagi nungguin file nih, bukan ketikan. Kirim fotonya dong, atau bilang 'batal' kalo ngga jadi. Semangat yaa!"
+                );
+            } else {
+                // Standard chitchat flow
+                try {
+                    if (Math.random() < 0.3) {
+                        const softBoyEmojis = [
+                            "👍",
+                            "😊",
+                            "✨",
+                            "🥺",
+                            "❤️",
+                            "✅",
+                        ];
+                        const randomEmoji =
+                            softBoyEmojis[
+                                Math.floor(Math.random() * softBoyEmojis.length)
+                            ];
+                        await message.react(randomEmoji);
+                    }
+                } catch (e) {
+                    console.warn("Couldn't react to message:", e.message);
+                }
+
+                const reply = await getChatResponse(
+                    message.body,
+                    chatHistories[chatId]
+                );
+                await client.sendMessage(chatId, reply);
+
+                chatHistories[chatId].push({
+                    role: "assistant",
+                    content: reply,
+                    timestamp: now,
+                });
+            }
             break;
     }
 });
