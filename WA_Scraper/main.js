@@ -180,7 +180,6 @@ async function runPythonScript(
 ) {
     return new Promise((resolve, reject) => {
         const scriptDir = path.join(__dirname, "DL");
-        // Point to your new Python script
         const pythonScriptPath = path.join(scriptDir, "process_image.py");
 
         const tempDir = path.join(__dirname, "temp");
@@ -189,7 +188,6 @@ async function runPythonScript(
         }`;
         const outputAssetPath = path.join(tempDir, outputFilename);
 
-        // Build the arguments array dynamically based on user's choice
         const args = [
             pythonScriptPath,
             "--source",
@@ -208,8 +206,12 @@ async function runPythonScript(
 
         console.log(`Calling Python script with args: ${args.join(" ")}`);
 
-        // Use 'python3' for better compatibility on Linux/macOS
-        const pythonProcess = spawn("python3", args, { cwd: scriptDir });
+        // *** CHANGE #1: Define the full path to the Python executable in your virtual environment ***
+        const pythonExecutable =
+            "/home/azureuser/whatsapp-deepfake-bot/new_env/bin/python3";
+
+        // *** CHANGE #2: Use the full path in the spawn command ***
+        const pythonProcess = spawn(pythonExecutable, args, { cwd: scriptDir });
 
         pythonProcess.stdout.on("data", (data) => {
             console.log("Python output:", data.toString().trim());
@@ -222,7 +224,8 @@ async function runPythonScript(
         pythonProcess.on("close", async (code) => {
             console.log(`Python script finished with code ${code}`);
 
-            // Clean up input files
+            // ... (the rest of your function remains the same)
+
             try {
                 if (fs.existsSync(sourceImagePath))
                     fs.unlinkSync(sourceImagePath);
