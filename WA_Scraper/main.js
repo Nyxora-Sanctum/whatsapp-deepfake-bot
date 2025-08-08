@@ -9,7 +9,7 @@ require("dotenv").config(); // Load environment variables from .env file
 const ModelClient = require("@azure-rest/ai-inference").default;
 const { AzureKeyCredential } = require("@azure/core-auth");
 
-// --- NEW: User Database for Persistence ---
+// --- User Database for Persistence ---
 const USER_DB_PATH = path.join(__dirname, "user_database.json");
 let userDB = {};
 
@@ -59,6 +59,9 @@ const client = new Client({
 
 // This object keeps track of each user's multi-step progress in memory
 const userStates = {};
+// NEW: This object keeps track of recent chat history for each user
+const chatHistories = {};
+const CHAT_HISTORY_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
 
 // --- Helper Functions ---
 
@@ -77,11 +80,11 @@ function createProgressBar(percentage) {
 /**
  * Uses an LLM to determine the user's intent from their message.
  * @param {string} userMessage The message sent by the user.
- * @returns {Promise<"IMAGE"|"VIDEO"|"UNKNOWN">} The classified intent.
+ * @returns {Promise<"IMAGE"|"VIDEO"|"CHITCHAT"|"UNKNOWN">} The classified intent.
  */
 async function getIntent(userMessage) {
     const systemPrompt =
-        "You are a classification assistant for a WhatsApp bot. Analyze the user's message to determine their intent. You must respond with only one of these three words: IMAGE, VIDEO, or UNKNOWN.";
+        "You are a classification assistant for a WhatsApp bot. Analyze the user's message to determine their intent. You must respond with only one of these three words: IMAGE, VIDEO, or CHITCHAT. If the user asks to create a picture, photo, or image, respond with IMAGE. If they ask to create a video or clip, respond with VIDEO. For any other conversation, greeting, or question, respond with CHITCHAT.";
 
     try {
         const response = await aiClient.path("/chat/completions").post({
@@ -90,7 +93,7 @@ async function getIntent(userMessage) {
                     { role: "system", content: systemPrompt },
                     {
                         role: "user",
-                        content: `What is the intent of this message? Message: "${userMessage}"`,
+                        content: `Classify the intent of this message: "${userMessage}"`,
                     },
                 ],
                 max_tokens: 10,
@@ -108,7 +111,7 @@ async function getIntent(userMessage) {
             .trim()
             .toUpperCase();
 
-        if (["IMAGE", "VIDEO"].includes(intent)) {
+        if (["IMAGE", "VIDEO", "CHITCHAT"].includes(intent)) {
             return intent;
         }
 
@@ -116,6 +119,43 @@ async function getIntent(userMessage) {
     } catch (err) {
         console.error("The intent detection encountered an error:", err);
         return "UNKNOWN";
+    }
+}
+
+/**
+ * NEW: Uses an LLM to generate a conversational response.
+ * @param {string} userMessage The latest message from the user.
+ * @param {Array<Object>} history The user's recent chat history.
+ * @returns {Promise<string>} The bot's generated response.
+ */
+async function getChatResponse(userMessage, history) {
+    const systemPrompt =
+        "You are a helpful and funny WhatsApp bot that talks like a close friend (homie). You use Indonesian Gen Z slang like 'njir', 'wkwk', 'goks', 'bjir', 'hell nah', 'ashiap', 'santuy'. Keep responses very short and casual, like texting a friend. Your main job is to chat, but you can also create images and videos if asked. Right now, your only task is to respond to the user's latest message based on the conversation history.";
+
+    const messages = [
+        { role: "system", content: systemPrompt },
+        ...history.map((h) => ({ role: h.role, content: h.content })),
+        { role: "user", content: userMessage },
+    ];
+
+    try {
+        const response = await aiClient.path("/chat/completions").post({
+            body: {
+                messages,
+                max_tokens: 80,
+                temperature: 0.7,
+                model: modelName,
+            },
+        });
+
+        if (response.status !== "200") {
+            console.error("Azure AI Error:", response.body.error);
+            return "Waduh, AI gua lagi nge-lag. Sori, bro.";
+        }
+        return response.body.choices[0].message.content;
+    } catch (err) {
+        console.error("The chat response encountered an error:", err);
+        return "Gua lagi puyeng, ntar lagi dah ngobrolnya.";
     }
 }
 
@@ -172,8 +212,7 @@ async function runPythonScript(
                 ) {
                     lastReportedProgress = currentProgress;
                     const progressBar = createProgressBar(currentProgress);
-                    // MODIFIED: Gen Z style message
-                    const messageText = `Okee, AI-nya lagi kerja keras nih.\n\n${progressBar}\n\nBentar yaa, sabar dikit. Kalo video emang lebih lama prosesnya.`;
+                    const messageText = `Santuy, AI gua lagi sat-set...\n\n${progressBar}\n\nSabar ye, kalo video emang butuh waktu lebih. Jangan di-spam, bro.`;
                     try {
                         await loadingMessage.edit(messageText);
                     } catch (editError) {
@@ -214,25 +253,22 @@ async function runPythonScript(
                     outputAssetPath
                 );
                 try {
-                    // MODIFIED: Gen Z style message
                     await loadingMessage.edit(
-                        "Selesaii! Bentar yaa, hasilnya lagi dikirim."
+                        "Udah kelar! Bentar, gua kirim hasilnya."
                     );
                     await new Promise((res) => setTimeout(res, 1000));
 
                     const outputMedia =
                         MessageMedia.fromFilePath(outputAssetPath);
                     await client.sendMessage(chatId, outputMedia, {
-                        // MODIFIED: Gen Z style message
-                        caption: "Nih hasilnya, gokil ga?",
+                        caption: "Nih hasilnya, goks kan? wkwkwk",
                     });
                     console.log("Successfully sent media to", chatId);
                     resolve();
                 } catch (sendError) {
                     console.error("Error sending message:", sendError);
-                    // MODIFIED: Gen Z style message
                     await loadingMessage.edit(
-                        "Yah, gagal kirim filenya. Coba lagi ntar ya."
+                        "Hell nah, filenya gagal kekirim. Coba lagi ntar, bro."
                     );
                     reject(sendError);
                 } finally {
@@ -243,12 +279,11 @@ async function runPythonScript(
                 }
             } else {
                 console.error("Python script failed or output file not found.");
-                // MODIFIED: Gen Z style error messages
                 let userErrorMessage =
-                    "Duh, ada error nih pas proses. Coba lagi ntar yaa.";
+                    "Njir, ada error pas proses. Coba lagi ntar ya, bro.";
                 if (noFaceDetected) {
                     userErrorMessage =
-                        "Yah, ga kedeteksi wajahnya di foto pertama. Coba pake foto lain yang mukanya jelas, ga miring, dan ga ketutupan apa-apa.";
+                        "Bjir, mukanya kaga keliatan di foto pertama. Coba pake foto lain dah. Yang lurus ke depan, jangan miring-miring kayak pembalap, dan jangan ketutupan apa-apa.";
                 }
                 await loadingMessage.edit(userErrorMessage);
                 reject(
@@ -276,49 +311,57 @@ client.on("qr", (qr) => {
 client.on("message", async (message) => {
     const chatId = message.from;
     const lowerCaseBody = message.body.toLowerCase();
+    const now = Date.now();
 
-    // --- NEW: Check for new user and send T&C ---
+    // --- History Management: Clear history if older than 15 mins ---
+    if (chatHistories[chatId] && chatHistories[chatId].length > 0) {
+        const firstMessageTimestamp = chatHistories[chatId][0].timestamp;
+        if (now - firstMessageTimestamp > CHAT_HISTORY_TIMEOUT_MS) {
+            console.log(`Chat history for ${chatId} expired. Clearing.`);
+            delete chatHistories[chatId];
+        }
+    }
+    if (!chatHistories[chatId]) {
+        chatHistories[chatId] = [];
+    }
+
+    // --- New User Onboarding ---
     if (!userDB[chatId]) {
         console.log(`New user detected: ${chatId}. Sending T&C.`);
         const tncPath = path.join(__dirname, "TNC.pdf");
 
         if (fs.existsSync(tncPath)) {
             const tncMedia = MessageMedia.fromFilePath(tncPath);
-            // MODIFIED: Gen Z style message
             await client.sendMessage(
                 chatId,
-                "Halo! Sebelum mulai, baca TNC dulu yaa. Penting nih biar sama-sama enak."
+                "Woy, bro! Kenalan dulu. Baca TNC ini yak, penting biar sama-sama asik."
             );
             await client.sendMessage(chatId, tncMedia);
         } else {
             console.warn("TNC.pdf not found in the script directory.");
-            // MODIFIED: Gen Z style message
             await client.sendMessage(
                 chatId,
-                "Halo! Kenalin aku bot AI buat tuker muka."
+                "Woy, bro! Kenalin, gua bot AI buat tuker muka."
             );
         }
 
-        // Add user to DB and save
         userDB[chatId] = { firstContact: new Date().toISOString() };
         saveUserDB();
 
-        // Send the main welcome message after T&C
-        // MODIFIED: Gen Z style welcome message
         const welcomeMessage = `
-Aku bisa nuker wajah di foto sama video.
+Gua bisa ngobrol santuy atau bikinin lo konten tuker muka di foto/video.
 
-Mau coba? Gampang, tinggal bilang aja mau buat apa, contohnya:
+Kalo mau bikin, bilang aja, contoh:
 ➡️ "bro, buatin gambar"
-➡️ "aku mau bikin video lucu"
+➡️ "bikin video lucu dong"
 
-Nanti aku pandu langkah-langkahnya. Yuk mulai!
+Kalo mau ngobrol, ya ngobrol aja. Gasss!
         `;
         await client.sendMessage(chatId, welcomeMessage.trim());
-        return; // Stop processing this message further
+        return;
     }
 
-    // Check if the user is already in a process
+    // --- Handle Active Generation Process ---
     if (userStates[chatId]) {
         const currentState = userStates[chatId];
         const assetTypeName =
@@ -341,10 +384,9 @@ Nanti aku pandu langkah-langkahnya. Yuk mulai!
                 currentState.faceImage = filepath;
                 currentState.state = `waiting_for_${currentState.type}`;
 
-                // MODIFIED: Gen Z style message
                 client.sendMessage(
                     chatId,
-                    `Oke, fotonya udah masuk. Sekarang kirim ${assetTypeName} yang mau diganti mukanya.`
+                    `Oke, foto muka dapet. Sekarang kirim ${assetTypeName} targetnya.`
                 );
                 return;
             }
@@ -368,10 +410,9 @@ Nanti aku pandu langkah-langkahnya. Yuk mulai!
                     });
                     currentState.mainAsset = filepath;
 
-                    // MODIFIED: Gen Z style message
                     const loadingMessage = await client.sendMessage(
                         chatId,
-                        "Sip, filenya lengkap. Prosesnya kumulai yaa."
+                        "Sip, bahan lengkap. Gua proses dulu, sabar..."
                     );
 
                     try {
@@ -394,70 +435,74 @@ Nanti aku pandu langkah-langkahnya. Yuk mulai!
                         delete userStates[chatId]; // Always reset state
                     }
                 } else {
-                    // MODIFIED: Gen Z style message
                     client.sendMessage(
                         chatId,
-                        `Eh, salah tipe file. Aku butuhnya ${assetTypeName}, bukan ${mediaType}. Kirim ulang yang bener yaa.`
+                        `Hell nah, itu kan ${mediaType}. Gua butuhnya ${assetTypeName}, bro. Kirim ulang yang bener.`
                     );
                 }
             }
         } else {
-            // MODIFIED: Gen Z style message
             client.sendMessage(
                 chatId,
-                "Jangan chat doang, kirim file dongg. Mau gambar apa video?"
+                "Bukan ngetik, bro. Kirim filenya donggg."
             );
         }
+        return; // Stop further processing
+    }
 
-        // If the user is NOT in a process, use the LLM to understand them
-    } else {
-        const intent = await getIntent(lowerCaseBody);
-        console.log(`User: "${lowerCaseBody}" -> Intent: ${intent}`);
+    // --- If not in a process, determine intent (Chit-chat, Image, Video) ---
+    const intent = await getIntent(lowerCaseBody);
+    console.log(`User: "${lowerCaseBody}" -> Intent: ${intent}`);
 
-        switch (intent) {
-            case "IMAGE":
-                userStates[chatId] = {
-                    state: "waiting_for_face",
-                    faceImage: null,
-                    mainAsset: null,
-                    type: "image",
-                };
-                // MODIFIED: Gen Z style message
-                client.sendMessage(
-                    chatId,
-                    "Oke, kita bikin gambar ya. Pertama, kirim dulu satu foto muka yang jelas."
-                );
-                break;
+    // Add user message to history AFTER intent classification but BEFORE response generation
+    chatHistories[chatId].push({
+        role: "user",
+        content: message.body,
+        timestamp: now,
+    });
 
-            case "VIDEO":
-                userStates[chatId] = {
-                    state: "waiting_for_face",
-                    faceImage: null,
-                    mainAsset: null,
-                    type: "video",
-                };
-                // MODIFIED: Gen Z style message
-                client.sendMessage(
-                    chatId,
-                    "Gas, kita bikin video. Kirim dulu satu foto muka yang jelas yaa."
-                );
-                break;
+    switch (intent) {
+        case "IMAGE":
+            userStates[chatId] = {
+                state: "waiting_for_face",
+                faceImage: null,
+                mainAsset: null,
+                type: "image",
+            };
+            client.sendMessage(
+                chatId,
+                "Ashiap, kita eksekusi gambarnya. Siniin dulu satu foto muka lo yang jelas, no kaleng-kaleng."
+            );
+            break;
 
-            case "UNKNOWN":
-            default:
-                // MODIFIED: Gen Z style welcome message
-                const welcomeMessage = `
-Halo! Aku bot AI yang bisa nuker wajah di foto dan video.
+        case "VIDEO":
+            userStates[chatId] = {
+                state: "waiting_for_face",
+                faceImage: null,
+                mainAsset: null,
+                type: "video",
+            };
+            client.sendMessage(
+                chatId,
+                "Gaskeun bikin video. Kirim dulu satu foto muka yang jelas, bro."
+            );
+            break;
 
-Mau coba? Gampang, tinggal bilang aja mau buat apa, contohnya:
-➡️ "bro, buatin gambar"
-➡️ "aku mau bikin video lucu"
-
-Nanti aku pandu langkah-langkahnya. Yuk mulai!
-                `;
-                client.sendMessage(chatId, welcomeMessage.trim());
-                break;
-        }
+        case "CHITCHAT":
+        case "UNKNOWN": // Treat UNKNOWN as CHITCHAT for a more robust conversational experience
+        default:
+            const reply = await getChatResponse(
+                message.body,
+                chatHistories[chatId]
+            );
+            await client.sendMessage(chatId, reply);
+            // Add bot's reply to history
+            chatHistories[chatId].push({
+                role: "assistant",
+                content: reply,
+                timestamp: now,
+            });
+            break;
     }
 });
 
