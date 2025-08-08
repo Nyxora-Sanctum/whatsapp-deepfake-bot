@@ -59,7 +59,7 @@ const client = new Client({
 
 // This object keeps track of each user's multi-step progress in memory
 const userStates = {};
-// NEW: This object keeps track of recent chat history for each user
+// This object keeps track of recent chat history for each user
 const chatHistories = {};
 const CHAT_HISTORY_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutes
 
@@ -123,13 +123,12 @@ async function getIntent(userMessage) {
 }
 
 /**
- * NEW: Uses an LLM to generate a conversational response.
+ * Uses an LLM to generate a conversational response.
  * @param {string} userMessage The latest message from the user.
  * @param {Array<Object>} history The user's recent chat history.
  * @returns {Promise<string>} The bot's generated response.
  */
 async function getChatResponse(userMessage, history) {
-    // --- MODIFICATION: Updated system prompt for 'soft boy' persona ---
     const systemPrompt =
         "You are a friendly and helpful WhatsApp bot with a 'soft boy' personality. You speak like a kind Gen Z Indonesian. Use 'aku' for yourself and 'kamu' for the user. Absolutely NEVER use 'lo' or 'gue'. Your vocabulary includes soft, modern slang like 'gemes', 'lucu banget', 'ih', 'hehe', 'wkwk', 'santuy', 'semangat ya', 'gapapa kok'. Keep your responses short, sweet, and conversational, like you're texting a close friend. Your main job is to chat, but you can also create images and videos if asked. Right now, your only task is to respond to the user's latest message based on the conversation history.";
 
@@ -269,7 +268,7 @@ async function runPythonScript(
                 } catch (sendError) {
                     console.error("Error sending message:", sendError);
                     await loadingMessage.edit(
-                        "Hell nah, filenya gagal kekirim. coba lagi yaa kak."
+                        "Aduh, filenya gagal kekirim. coba lagi yaa kak."
                     );
                     reject(sendError);
                 } finally {
@@ -281,7 +280,7 @@ async function runPythonScript(
             } else {
                 console.error("Python script failed or output file not found.");
                 let userErrorMessage =
-                    "Njir, ada error pas proses. Coba lagi ya.";
+                    "Waduh, ada error pas proses. Coba lagi ya.";
                 if (noFaceDetected) {
                     userErrorMessage =
                         "Mukanya nggak keliatan di foto pertama. Coba pake foto lain deh. Yang lurus ke depan, jangan miring-miring, dan jangan ketutupan apa-apa.";
@@ -362,13 +361,64 @@ Kalo mau ngobrol dulu nggapapa kok!
         return;
     }
 
-    // --- Handle Active Generation Process ---
+    // --- Handle Active Generation Process WITH Cancellation/Switching ---
     if (userStates[chatId]) {
-        const currentState = userStates[chatId];
-        const assetTypeName =
-            currentState.type === "image" ? "gambar" : "video";
+        // --- Check for text commands (cancel/switch) before checking for media ---
+        if (!message.hasMedia) {
+            const cancelKeywords = [
+                "cancel",
+                "batal",
+                "stop",
+                "gajadi",
+                "berhenti",
+            ];
+            // 1. Check for cancellation
+            if (
+                cancelKeywords.some((keyword) =>
+                    lowerCaseBody.includes(keyword)
+                )
+            ) {
+                console.log(`Process cancelled by user ${chatId}.`);
+                await client.sendMessage(
+                    chatId,
+                    "Oke, prosesnya aku batalin ya. Kalo mau mulai lagi, bilang aja hehe. 😊"
+                );
+                delete userStates[chatId]; // Clear the state
+                return; // Stop further processing
+            }
 
-        if (message.hasMedia) {
+            // 2. Check for an intent switch
+            const newIntent = await getIntent(lowerCaseBody);
+            if (
+                (newIntent === "IMAGE" || newIntent === "VIDEO") &&
+                newIntent.toLowerCase() !== userStates[chatId].type
+            ) {
+                console.log(
+                    `User ${chatId} switching from ${userStates[chatId].type} to ${newIntent}.`
+                );
+                await client.sendMessage(
+                    chatId,
+                    `Oke, kita ganti ya. Batalin yang ${
+                        userStates[chatId].type
+                    }, sekarang kita mulai buat ${newIntent.toLowerCase()} baru.`
+                );
+                delete userStates[chatId]; // Clear the old state to start a new one
+                // Do NOT return, let the code fall through to the main intent handler
+            } else {
+                // 3. If it's just random text, remind the user what to do
+                await client.sendMessage(
+                    chatId,
+                    "Lagi nungguin file nih, bukan ketikan. Kirim fotonya dong, atau bilang 'batal' kalo ngga jadi. Semangat yaa!"
+                );
+                return;
+            }
+        }
+
+        // --- This part now only runs if a state was NOT cleared above ---
+        if (userStates[chatId] && message.hasMedia) {
+            const currentState = userStates[chatId];
+            const assetTypeName =
+                currentState.type === "image" ? "gambar" : "video";
             const media = await message.downloadMedia();
             const mediaType = media.mimetype.split("/")[0];
 
@@ -387,7 +437,7 @@ Kalo mau ngobrol dulu nggapapa kok!
 
                 client.sendMessage(
                     chatId,
-                    `Oke, foto muka dapet. Sekarang kirim ${assetTypeName} targetnya.`
+                    `Oke, foto muka dapet. Sekarang kirim ${assetTypeName} targetnya yaa.`
                 );
                 return;
             }
@@ -413,7 +463,7 @@ Kalo mau ngobrol dulu nggapapa kok!
 
                     const loadingMessage = await client.sendMessage(
                         chatId,
-                        "Sip, bahan lengkap. Gua proses dulu, sabar..."
+                        "Sip, bahan lengkap. Aku proses dulu ya, sabar..."
                     );
 
                     try {
@@ -438,17 +488,12 @@ Kalo mau ngobrol dulu nggapapa kok!
                 } else {
                     client.sendMessage(
                         chatId,
-                        `Hell nah, itu kan ${mediaType}. Gua butuhnya ${assetTypeName}, bro. Kirim ulang yang bener.`
+                        `Ih, itu kan ${mediaType}. Aku butuhnya ${assetTypeName}, kamu salah kirim hehe. Kirim ulang yang bener ya.`
                     );
                 }
             }
-        } else {
-            client.sendMessage(
-                chatId,
-                "Bukan ngetik, bro. Kirim filenya donggg."
-            );
+            return; // Stop further processing after handling media
         }
-        return; // Stop further processing
     }
 
     // --- If not in a process, determine intent (Chit-chat, Image, Video) ---
@@ -462,7 +507,6 @@ Kalo mau ngobrol dulu nggapapa kok!
         timestamp: now,
     });
 
-    // --- MODIFICATION: Added emoji reactions and adjusted prompts ---
     switch (intent) {
         case "IMAGE":
             userStates[chatId] = {
@@ -491,11 +535,9 @@ Kalo mau ngobrol dulu nggapapa kok!
             break;
 
         case "CHITCHAT":
-        case "UNKNOWN": // Treat UNKNOWN as CHITCHAT for a more robust conversational experience
+        case "UNKNOWN": // Treat UNKNOWN as CHITCHAT
         default:
-            // --- MODIFICATION: Add a chance to react with an emoji for natural interaction ---
             try {
-                // React to the user's message sometimes (e.g., 30% chance)
                 if (Math.random() < 0.3) {
                     const softBoyEmojis = ["👍", "😊", "✨", "🥺", "❤️", "✅"];
                     const randomEmoji =
@@ -513,7 +555,7 @@ Kalo mau ngobrol dulu nggapapa kok!
                 chatHistories[chatId]
             );
             await client.sendMessage(chatId, reply);
-            // Add bot's reply to history
+
             chatHistories[chatId].push({
                 role: "assistant",
                 content: reply,
