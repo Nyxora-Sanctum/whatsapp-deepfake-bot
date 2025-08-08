@@ -4,8 +4,6 @@ const fs = require("fs");
 const { spawn } = require("child_process");
 const path = require("path");
 
-// Use a local Chrome installation to ensure video processing works correctly.
-// Using LocalAuth prevents you from needing to scan the QR code every time.
 const client = new Client({
     authStrategy: new LocalAuth(),
     puppeteer: {
@@ -14,7 +12,6 @@ const client = new Client({
     },
 });
 
-// This object keeps track of each user's progress
 const userStates = {};
 
 client.on("ready", () => {
@@ -29,151 +26,162 @@ client.initialize();
 
 client.on("message", async (message) => {
     const chatId = message.from;
-    const lowerCaseBody = message.body.toLowerCase();
+    const lowerCaseBody = message.body.toLowerCase().trim();
 
-    // Check if the user is starting a new image generation
+    // Command to start image generation
     if (lowerCaseBody === "generate_image") {
         userStates[chatId] = {
             state: "waiting_for_face",
             faceImage: null,
             mainAsset: null,
             type: "image",
+            // *** NEW: Add a property to store upscale choice ***
+            upscaleChoice: null,
         };
         client.sendMessage(
             chatId,
-            "Great! Please send me an image with a face in it."
+            "Great! Please send me an image with a single, clear face in it."
         );
         return;
     }
 
-    // Check if the user is starting a new video generation
+    // Command to start video generation
     if (lowerCaseBody === "generate_video") {
         userStates[chatId] = {
             state: "waiting_for_face",
             faceImage: null,
             mainAsset: null,
             type: "video",
+            upscaleChoice: null,
         };
         client.sendMessage(
             chatId,
-            "Great! Please send me an image with a face in it."
+            "Great! Please send me an image with a single, clear face in it."
         );
         return;
     }
 
-    // If the user is already in a process, handle their next message
+    // Handle the user's conversation flow
     if (userStates[chatId]) {
         const currentState = userStates[chatId];
 
-        if (message.hasMedia) {
+        // State 1: Waiting for the face image
+        if (currentState.state === "waiting_for_face" && message.hasMedia) {
+            const media = await message.downloadMedia();
+            const filename = `face-${Date.now()}.${
+                media.mimetype.split("/")[1]
+            }`;
+            const tempDir = path.join(__dirname, "temp");
+            if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
+            const filepath = path.join(tempDir, filename);
+
+            fs.writeFileSync(filepath, media.data, { encoding: "base64" });
+            currentState.faceImage = filepath;
+            currentState.state = `waiting_for_${currentState.type}`;
+
+            client.sendMessage(
+                chatId,
+                `Face received! Now, please send the target ${currentState.type} you want to modify.`
+            );
+            return;
+        }
+
+        // State 2: Waiting for the target image/video
+        if (
+            currentState.state === `waiting_for_${currentState.type}` &&
+            message.hasMedia
+        ) {
             const media = await message.downloadMedia();
             const mediaType = media.mimetype.split("/")[0];
+            const isCorrectType =
+                (currentState.type === "image" && mediaType === "image") ||
+                (currentState.type === "video" && mediaType === "video");
 
-            // Handle the face image upload
-            if (currentState.state === "waiting_for_face") {
-                const filename = `face-${Date.now()}.${
+            if (isCorrectType) {
+                const filename = `${currentState.type}-${Date.now()}.${
                     media.mimetype.split("/")[1]
                 }`;
                 const tempDir = path.join(__dirname, "temp");
-                if (!fs.existsSync(tempDir)) {
-                    fs.mkdirSync(tempDir);
-                }
                 const filepath = path.join(tempDir, filename);
-
                 fs.writeFileSync(filepath, media.data, { encoding: "base64" });
-                currentState.faceImage = filepath;
-                currentState.state = `waiting_for_${currentState.type}`;
+                currentState.mainAsset = filepath;
 
+                // *** NEW: Move to the next state to ask about upscaling ***
+                currentState.state = "waiting_for_upscale_choice";
+                const upscaleQuestion = `Got it. Do you want to enhance and upscale the result? This will take longer.
+
+Please reply with one of the following:
+*- yes 2x* (upscale by a factor of 2)
+*- yes 4x* (upscale by a factor of 4)
+*- no* (just do the face swap)`;
+                client.sendMessage(chatId, upscaleQuestion);
+            } else {
                 client.sendMessage(
                     chatId,
-                    `Face received! Now, please send the ${currentState.type} you want to put the face on.`
+                    `That's not the right file type. I was expecting a ${currentState.type}. Please send the correct file.`
+                );
+            }
+            return;
+        }
+
+        // *** NEW: State 3: Waiting for the user's upscale choice ***
+        if (currentState.state === "waiting_for_upscale_choice") {
+            if (lowerCaseBody === "yes 2x") {
+                currentState.upscaleChoice = { enabled: true, factor: 2 };
+            } else if (lowerCaseBody === "yes 4x") {
+                currentState.upscaleChoice = { enabled: true, factor: 4 };
+            } else if (lowerCaseBody === "no") {
+                currentState.upscaleChoice = { enabled: false };
+            } else {
+                client.sendMessage(
+                    chatId,
+                    "Sorry, that's not a valid option. Please reply with 'yes 2x', 'yes 4x', or 'no'."
                 );
                 return;
             }
 
-            // Handle the target image or video upload
-            else if (
-                currentState.state === `waiting_for_${currentState.type}`
-            ) {
-                const isCorrectType =
-                    (currentState.type === "image" && mediaType === "image") ||
-                    (currentState.type === "video" && mediaType === "video");
-
-                if (isCorrectType) {
-                    const filename = `${currentState.type}-${Date.now()}.${
-                        media.mimetype.split("/")[1]
-                    }`;
-                    const tempDir = path.join(__dirname, "temp");
-                    const filepath = path.join(tempDir, filename);
-                    fs.writeFileSync(filepath, media.data, {
-                        encoding: "base64",
-                    });
-                    currentState.mainAsset = filepath;
-
-                    client.sendMessage(
-                        chatId,
-                        "Processing your request. This might take a moment... ⏳"
-                    );
-
-                    console.log(
-                        `Calling Python script for ${currentState.type} with:`,
-                        currentState.faceImage,
-                        currentState.mainAsset
-                    );
-
-                    // Run the Python script and wait for it to finish
-                    await runPythonScript(
-                        chatId,
-                        currentState.faceImage,
-                        currentState.mainAsset,
-                        currentState.type
-                    );
-
-                    // Clean up the user's state after finishing
-                    delete userStates[chatId];
-                } else {
-                    client.sendMessage(
-                        chatId,
-                        `That's not the right file type. I was expecting a ${currentState.type}. Please send the correct file.`
-                    );
-                }
-            }
-        } else {
             client.sendMessage(
                 chatId,
-                "I was expecting a file. Please send an image or video."
+                "Processing your request. This might take a moment... ⏳"
             );
+
+            // Now we have all the info, run the script
+            await runPythonScript(
+                chatId,
+                currentState.faceImage,
+                currentState.mainAsset,
+                currentState.type,
+                currentState.upscaleChoice
+            );
+
+            // Clean up the user's state after finishing
+            delete userStates[chatId];
+            return;
         }
-    } else {
-        // --- NEW: Welcome message for random chats ---
-        // If the user isn't in a process and sends a random message, show them the menu.
-        const welcomeMessage = `
-Hello! 👋 I can swap faces in images and videos.
+    }
+
+    // Default message if no command is matched
+    const welcomeMessage = `Hello! 👋 I can swap faces and enhance media.
 
 Here are the commands you can use:
 
-1️⃣ Type *generate_image* to start swapping a face onto an image.
-2️⃣ Type *generate_video* to start swapping a face onto a video.
-
-Just send one of those commands to begin!
-        `;
-        client.sendMessage(chatId, welcomeMessage);
-    }
+1️⃣ Type *generate_image* to start.
+2️⃣ Type *generate_video* to start.`;
+    client.sendMessage(chatId, welcomeMessage);
 });
 
-// This function runs the Python script to do the face swapping
-// This function runs the Python script to do the face swapping
-// This function runs the Python script to do the face swapping
+// *** CHANGE: This function is updated to handle the new Python script and arguments ***
 async function runPythonScript(
     chatId,
     sourceImagePath,
     targetAssetPath,
-    assetType
+    assetType,
+    upscaleOptions
 ) {
     return new Promise((resolve, reject) => {
-        // Define the directory where the Python script and its 'modules' folder are located
-        const scriptDir = path.join(__dirname, "DL"); 
-        const pythonScriptPath = path.join(scriptDir, "process_image.py");
+        const scriptDir = path.join(__dirname, "DL");
+        // Point to your new Python script
+        const pythonScriptPath = path.join(scriptDir, "process_cpu.py");
 
         const tempDir = path.join(__dirname, "temp");
         const outputFilename = `output-${Date.now()}.${
@@ -181,6 +189,7 @@ async function runPythonScript(
         }`;
         const outputAssetPath = path.join(tempDir, outputFilename);
 
+        // Build the arguments array dynamically based on user's choice
         const args = [
             pythonScriptPath,
             "--source",
@@ -189,14 +198,18 @@ async function runPythonScript(
             targetAssetPath,
             "--output",
             outputAssetPath,
-            "--execution-provider",
-            "CPUExecutionProvider",
         ];
+
+        if (upscaleOptions && upscaleOptions.enabled) {
+            args.push("--upscale-factor", String(upscaleOptions.factor));
+        } else {
+            args.push("--skip-upscale");
+        }
 
         console.log(`Calling Python script with args: ${args.join(" ")}`);
 
-        // --- THE FIX: Add the 'cwd' option to set the working directory ---
-        const pythonProcess = spawn("python", args, { cwd: scriptDir });
+        // Use 'python3' for better compatibility on Linux/macOS
+        const pythonProcess = spawn("python3", args, { cwd: scriptDir });
 
         pythonProcess.stdout.on("data", (data) => {
             console.log("Python output:", data.toString().trim());
@@ -211,35 +224,40 @@ async function runPythonScript(
 
             // Clean up input files
             try {
-                if (fs.existsSync(sourceImagePath)) await fs.promises.unlink(sourceImagePath);
-                if (fs.existsSync(targetAssetPath)) await fs.promises.unlink(targetAssetPath);
+                if (fs.existsSync(sourceImagePath))
+                    fs.unlinkSync(sourceImagePath);
+                if (fs.existsSync(targetAssetPath))
+                    fs.unlinkSync(targetAssetPath);
             } catch (cleanupError) {
                 console.error("Failed to clean up input files:", cleanupError);
             }
 
             if (code === 0 && fs.existsSync(outputAssetPath)) {
-                console.log("Python script successful! Output at:", outputAssetPath);
+                console.log(
+                    "Python script successful! Output at:",
+                    outputAssetPath
+                );
                 try {
-                    await new Promise((resolve) => setTimeout(resolve, 1000));
-                    const outputMedia = MessageMedia.fromFilePath(outputAssetPath);
+                    await new Promise((res) => setTimeout(res, 1000));
+                    const outputMedia =
+                        MessageMedia.fromFilePath(outputAssetPath);
                     await client.sendMessage(chatId, outputMedia, {
-                        caption: "Here is your generated media!",
+                        caption: "Here is your generated media! ✨",
                     });
-                    console.log("Successfully sent media to", chatId);
                     resolve();
                 } catch (sendError) {
                     console.error("Error sending message:", sendError);
                     reject(sendError);
                 } finally {
-                    // Clean up output file
-                    if (fs.existsSync(outputAssetPath)) {
-                        await fs.promises.unlink(outputAssetPath);
-                    }
+                    if (fs.existsSync(outputAssetPath))
+                        fs.unlinkSync(outputAssetPath);
                 }
             } else {
-                console.error("Python script failed or output file not found.");
-                client.sendMessage(chatId, "Something went wrong. Please try again.");
-                reject(new Error("Python script failed."));
+                client.sendMessage(
+                    chatId,
+                    "Something went wrong during processing. Please try again."
+                );
+                reject(new Error(`Python script failed with code ${code}.`));
             }
         });
     });
