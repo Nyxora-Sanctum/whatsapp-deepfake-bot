@@ -381,15 +381,12 @@ client.on("message", async (message) => {
         // State Machine for collecting data and choices
         switch (currentState.state) {
             case "waiting_for_face":
-                // FIX: Check that message.mimetype exists before using it
-                if (
-                    message.hasMedia &&
-                    message.mimetype &&
-                    message.mimetype.startsWith("image/")
-                ) {
+                // FIX: Check message.type to accept both images and stickers.
+                if (message.type === "image" || message.type === "sticker") {
                     const media = await message.downloadMedia();
+                    // Stickers are often .webp, which is fine for the Python script
                     const filename = `face-${Date.now()}.${
-                        media.mimetype.split("/")[1]
+                        media.mimetype.split("/")[1] || "webp"
                     }`;
                     const tempDir = path.join(__dirname, "temp");
                     if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
@@ -410,47 +407,42 @@ client.on("message", async (message) => {
                 } else {
                     await client.sendMessage(
                         chatId,
-                        "Itu bukan foto, hehe. Kirimin foto muka yang jelas ya, jangan stiker."
+                        "Itu bukan foto, hehe. Kirimin foto muka atau stiker yang jelas ya."
                     );
                 }
                 break;
 
             case "waiting_for_target":
-                // FIX: Check that message.mimetype exists before using it
-                if (message.hasMedia && message.mimetype) {
+                // FIX: Check message.type for the target media as well.
+                const isCorrectType =
+                    currentState.type === message.type ||
+                    (currentState.type === "image" &&
+                        message.type === "sticker");
+
+                if (message.hasMedia && isCorrectType) {
                     const media = await message.downloadMedia();
-                    const mediaType = media.mimetype.split("/")[0];
-                    const isCorrectType = mediaType === currentState.type;
+                    const filename = `${currentState.type}-${Date.now()}.${
+                        media.mimetype.split("/")[1] || "webp"
+                    }`;
+                    const tempDir = path.join(__dirname, "temp");
+                    const filepath = path.join(tempDir, filename);
+                    fs.writeFileSync(filepath, media.data, {
+                        encoding: "base64",
+                    });
 
-                    if (isCorrectType) {
-                        const filename = `${currentState.type}-${Date.now()}.${
-                            media.mimetype.split("/")[1]
-                        }`;
-                        const tempDir = path.join(__dirname, "temp");
-                        const filepath = path.join(tempDir, filename);
-                        fs.writeFileSync(filepath, media.data, {
-                            encoding: "base64",
-                        });
+                    currentState.mainAsset = filepath;
+                    currentState.state = "waiting_for_enhancer_choice";
 
-                        currentState.mainAsset = filepath;
-                        currentState.state = "waiting_for_enhancer_choice";
-
-                        await client.sendMessage(
-                            chatId,
-                            "Oke, bahan lengkap! Sebelum diproses, aku mau tanya beberapa hal.\n\nMukanya mau dibuat lebih jernih (enhance)? Jawab *'iya'* atau *'ngga'*, hehe."
-                        );
-                    } else {
-                        const assetTypeName =
-                            currentState.type === "image" ? "gambar" : "video";
-                        await client.sendMessage(
-                            chatId,
-                            `Waduh, salah file. Aku butuhnya ${assetTypeName}, bukan ${mediaType}. Kirim ulang ya.`
-                        );
-                    }
-                } else {
                     await client.sendMessage(
                         chatId,
-                        `Bukan ngetik, kirim file ${currentState.type} nya dongg.`
+                        "Oke, bahan lengkap! Sebelum diproses, aku mau tanya beberapa hal.\n\nMukanya mau dibuat lebih jernih (enhance)? Jawab *'iya'* atau *'ngga'*, hehe."
+                    );
+                } else {
+                    const assetTypeName =
+                        currentState.type === "image" ? "gambar" : "video";
+                    await client.sendMessage(
+                        chatId,
+                        `Waduh, salah file. Aku butuhnya ${assetTypeName}. Kirim ulang ya.`
                     );
                 }
                 break;
@@ -548,7 +540,7 @@ Bilang aja "buat video" atau "bikin gambar" buat mulai.
 
 2️⃣ *Kirim File*
 Aku bakal minta kamu kirim 2 file:
-- *Foto Muka*: Foto orang yang mukanya mau dipake.
+- *Foto Muka*: Foto orang yang mukanya mau dipake (bisa foto biasa atau stiker).
 - *File Target*: Foto atau video yang mukanya mau diganti.
 
 3️⃣ *Jawab Pertanyaan*
