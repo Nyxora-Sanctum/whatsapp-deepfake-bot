@@ -336,7 +336,10 @@ client.on("message", async (message) => {
 
     // History Management
     if (chatHistories[chatId] && chatHistories[chatId].length > 0) {
-        if (now - chatHistories[chatId][0].timestamp > CHAT_HISTORY_TIMEOUT_MS) {
+        if (
+            now - chatHistories[chatId][0].timestamp >
+            CHAT_HISTORY_TIMEOUT_MS
+        ) {
             delete chatHistories[chatId];
         }
     }
@@ -345,24 +348,33 @@ client.on("message", async (message) => {
     // New User Onboarding
     if (!userDB[chatId]) {
         console.log(`New user detected: ${chatId}.`);
-        await client.sendMessage(chatId, "Haloo! Aku bot AI yang bisa tuker muka di foto atau video. Sebelum mulai, datamu di sini aman kok, nggak bakal disalahgunain.");
+        await client.sendMessage(
+            chatId,
+            "Haloo! Aku bot AI yang bisa tuker muka di foto atau video. Sebelum mulai, datamu di sini aman kok, nggak bakal disalahgunain."
+        );
         userDB[chatId] = { firstContact: new Date().toISOString() };
         saveUserDB();
         const welcomeMessage = `Kalo mau bikin, bilang aja, contoh:\n➡️ *"Ubahin wajah di fotoku dongg"*\n\nKetik *!help* buat liat menu bantuan ya.\nKalo mau ngobrol dulu juga boleh!`;
         await client.sendMessage(chatId, welcomeMessage.trim());
         return;
     }
-    
-    // --- THIS IS THE CORRECTED LOGIC BLOCK ---
-    // It correctly waits for user input at each stage.
+
+    // This block correctly handles the multi-step conversation
     if (userStates[chatId]) {
         const currentState = userStates[chatId];
 
         // Cancellation Logic
         if (!message.hasMedia) {
             const cancelKeywords = ["cancel", "batal", "stop", "gajadi"];
-            if (cancelKeywords.some((keyword) => lowerCaseBody.includes(keyword))) {
-                await client.sendMessage(chatId, "Oke, prosesnya aku batalin ya. 😊");
+            if (
+                cancelKeywords.some((keyword) =>
+                    lowerCaseBody.includes(keyword)
+                )
+            ) {
+                await client.sendMessage(
+                    chatId,
+                    "Oke, prosesnya aku batalin ya. 😊"
+                );
                 delete userStates[chatId];
                 return;
             }
@@ -371,60 +383,98 @@ client.on("message", async (message) => {
         // State Machine for collecting data and choices
         switch (currentState.state) {
             case "waiting_for_face":
-                if (message.type === 'image' || message.type === 'sticker') {
+                if (message.type === "image" || message.type === "sticker") {
                     const media = await message.downloadMedia();
-                    const filename = `face-${Date.now()}.${media.mimetype.split("/")[1] || 'webp'}`;
+                    const filename = `face-${Date.now()}.${
+                        media.mimetype.split("/")[1] || "webp"
+                    }`;
                     const tempDir = path.join(__dirname, "temp");
                     if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
                     const filepath = path.join(tempDir, filename);
-                    fs.writeFileSync(filepath, media.data, { encoding: "base64" });
-                    
+                    fs.writeFileSync(filepath, media.data, {
+                        encoding: "base64",
+                    });
+
                     currentState.faceImage = filepath;
                     currentState.state = "waiting_for_target";
-                    
-                    const assetTypeName = currentState.type === "image" ? "gambar" : "video";
-                    await client.sendMessage(chatId, `Sip, foto muka dapet. Sekarang kirim ${assetTypeName} targetnya yaa.`);
+
+                    const assetTypeName =
+                        currentState.type === "image" ? "gambar" : "video";
+                    await client.sendMessage(
+                        chatId,
+                        `Sip, foto muka dapet. Sekarang kirim ${assetTypeName} targetnya yaa.`
+                    );
                 } else {
-                    await client.sendMessage(chatId, "Itu bukan foto, hehe. Kirimin foto muka atau stiker yang jelas ya.");
+                    await client.sendMessage(
+                        chatId,
+                        "Itu bukan foto, hehe. Kirimin foto muka atau stiker yang jelas ya."
+                    );
                 }
                 break;
 
             case "waiting_for_target":
-                const isCorrectType = (currentState.type === message.type) || (currentState.type === 'image' && message.type === 'sticker');
-                
+                const isCorrectType =
+                    currentState.type === message.type ||
+                    (currentState.type === "image" &&
+                        message.type === "sticker");
+
                 if (message.hasMedia && isCorrectType) {
                     const media = await message.downloadMedia();
-                    const filename = `${currentState.type}-${Date.now()}.${media.mimetype.split("/")[1] || 'webp'}`;
+                    const filename = `${currentState.type}-${Date.now()}.${
+                        media.mimetype.split("/")[1] || "webp"
+                    }`;
                     const tempDir = path.join(__dirname, "temp");
                     const filepath = path.join(tempDir, filename);
-                    fs.writeFileSync(filepath, media.data, { encoding: "base64" });
+                    fs.writeFileSync(filepath, media.data, {
+                        encoding: "base64",
+                    });
 
                     currentState.mainAsset = filepath;
                     currentState.state = "waiting_for_enhancer_choice";
-                    
-                    await client.sendMessage(chatId, "Oke, bahan lengkap! Sebelum diproses, aku mau tanya beberapa hal.\n\nMukanya mau dibuat lebih jernih (enhance)? Jawab *'iya'* atau *'ngga'*, hehe.");
+
+                    await client.sendMessage(
+                        chatId,
+                        "Oke, bahan lengkap! Sebelum diproses, aku mau tanya beberapa hal.\n\nMukanya mau dibuat lebih jernih (enhance)? Jawab *'iya'* atau *'ngga'*, hehe."
+                    );
                 } else {
-                    const assetTypeName = currentState.type === "image" ? "gambar" : "video";
-                    await client.sendMessage(chatId, `Waduh, salah file. Aku butuhnya ${assetTypeName}. Kirim ulang ya.`);
+                    const assetTypeName =
+                        currentState.type === "image" ? "gambar" : "video";
+                    await client.sendMessage(
+                        chatId,
+                        `Waduh, salah file. Aku butuhnya ${assetTypeName}. Kirim ulang ya.`
+                    );
                 }
                 break;
 
             case "waiting_for_enhancer_choice":
-                currentState.useEnhancer = (lowerCaseBody.includes('iya') || lowerCaseBody.includes('yes'));
+                currentState.useEnhancer =
+                    lowerCaseBody.includes("iya") ||
+                    lowerCaseBody.includes("yes");
                 currentState.state = "waiting_for_faces_choice";
-                await client.sendMessage(chatId, "Sip, dicatet. Kalo di target ada banyak muka, aku proses *semua* atau *satu* aja? Jawab *'semua'* atau *'satu'*.");
+                await client.sendMessage(
+                    chatId,
+                    "Sip, dicatet. Kalo di target ada banyak muka, aku proses *semua* atau *satu* aja? Jawab *'semua'* atau *'satu'*."
+                );
                 break;
 
             case "waiting_for_faces_choice":
-                currentState.processManyFaces = (lowerCaseBody.includes('semua') || lowerCaseBody.includes('all'));
-                if (currentState.type === 'video') {
+                currentState.processManyFaces =
+                    lowerCaseBody.includes("semua") ||
+                    lowerCaseBody.includes("all");
+                if (currentState.type === "video") {
                     currentState.state = "waiting_for_quality_choice";
-                    await client.sendMessage(chatId, "Oke. Terakhir nih, mau kualitas hasilnya *Biasa* aja atau yang *Bagus*? Kalo bagus, prosesnya bakal lebih lama ya, hehe.");
+                    await client.sendMessage(
+                        chatId,
+                        "Oke. Terakhir nih, mau kualitas hasilnya *Biasa* aja atau yang *Bagus*? Kalo bagus, prosesnya bakal lebih lama ya, hehe."
+                    );
                 } else {
                     try {
                         await runPythonScript(chatId, currentState);
                     } catch (error) {
-                        console.error(`Script execution failed for ${chatId}:`, error.message);
+                        console.error(
+                            `Script execution failed for ${chatId}:`,
+                            error.message
+                        );
                     } finally {
                         delete userStates[chatId];
                     }
@@ -432,18 +482,28 @@ client.on("message", async (message) => {
                 break;
 
             case "waiting_for_quality_choice":
-                currentState.quality = (lowerCaseBody.includes('bagus') || lowerCaseBody.includes('high')) ? 'high' : 'normal';
+                currentState.quality =
+                    lowerCaseBody.includes("bagus") ||
+                    lowerCaseBody.includes("high")
+                        ? "high"
+                        : "normal";
                 try {
                     await runPythonScript(chatId, currentState);
                 } catch (error) {
-                    console.error(`Script execution failed for ${chatId}:`, error.message);
+                    console.error(
+                        `Script execution failed for ${chatId}:`,
+                        error.message
+                    );
                 } finally {
                     delete userStates[chatId];
                 }
                 break;
-            
+
             default:
-                 await client.sendMessage(chatId, "Lagi nungguin file nih, bukan ketikan. Atau bilang 'batal' kalo ngga jadi.");
+                await client.sendMessage(
+                    chatId,
+                    "Lagi nungguin file nih, bukan ketikan. Atau bilang 'batal' kalo ngga jadi."
+                );
         }
         return;
     }
@@ -451,7 +511,11 @@ client.on("message", async (message) => {
     // If not in a process, determine intent
     const intent = await getIntent(lowerCaseBody);
     console.log(`User: "${lowerCaseBody}" -> Intent: ${intent}`);
-    chatHistories[chatId].push({ role: "user", content: message.body, timestamp: now });
+    chatHistories[chatId].push({
+        role: "user",
+        content: message.body,
+        timestamp: now,
+    });
 
     switch (intent) {
         case "IMAGE":
@@ -462,7 +526,10 @@ client.on("message", async (message) => {
                 state: "waiting_for_face",
                 type: intent.toLowerCase(),
             };
-            await client.sendMessage(chatId, `Oke siap, kita buatin ${intent.toLowerCase()}nya. Kirimin aku satu foto muka kamu yang jelas yaa, biar hasilnya bagus.`);
+            await client.sendMessage(
+                chatId,
+                `Oke siap, kita buatin ${intent.toLowerCase()}nya. Kirimin aku satu foto muka kamu yang jelas yaa, biar hasilnya bagus.`
+            );
             break;
 
         case "HELP":
@@ -495,13 +562,26 @@ Santuy aja kalo mau tanya-tanya atau ngobrol dulu! 😊
             try {
                 if (Math.random() < 0.3) {
                     const softBoyEmojis = ["👍", "😊", "✨", "🥺", "❤️", "✅"];
-                    await message.react(softBoyEmojis[Math.floor(Math.random() * softBoyEmojis.length)]);
+                    await message.react(
+                        softBoyEmojis[
+                            Math.floor(Math.random() * softBoyEmojis.length)
+                        ]
+                    );
                 }
-            } catch (e) { /* ignore react error */ }
+            } catch (e) {
+                /* ignore react error */
+            }
 
-            const reply = await getChatResponse(message.body, chatHistories[chatId]);
+            const reply = await getChatResponse(
+                message.body,
+                chatHistories[chatId]
+            );
             await client.sendMessage(chatId, reply);
-            chatHistories[chatId].push({ role: "assistant", content: reply, timestamp: now });
+            chatHistories[chatId].push({
+                role: "assistant",
+                content: reply,
+                timestamp: now,
+            });
             break;
     }
 });
