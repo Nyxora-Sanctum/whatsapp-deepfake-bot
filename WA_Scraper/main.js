@@ -503,7 +503,7 @@ client.on("message", async (message) => {
             const tncMedia = MessageMedia.fromFilePath(tncPath);
             await client.sendMessage(
                 chatId,
-                "Haloo, dibaca dulu ya syarat dan ketentuannya. Makasi."
+                "Haloo, selamat datang! Aku bot AI yang bisa bantu kamu edit foto dan video. Sebelum mulai, baca dulu yaa Syarat dan Ketentuan berikut ini. Makasii 😊"
             );
             await client.sendMessage(chatId, tncMedia);
         } else {
@@ -633,15 +633,34 @@ Kalo mau ngobrol dulu nggapapa kok!`;
                     "Lagi nungguin file nih, bukan ketikan. Kirim fotonya dong, atau bilang 'batal' kalo ngga jadi. Semangat yaa!"
                 );
             } else {
-                // Standard chitchat flow with LLM-based reactions
+                // --- [MODIFIED] Standard chitchat flow with chance-based LLM reactions ---
 
-                // Run both API calls in parallel for better performance
-                const [emoji, reply] = await Promise.all([
-                    getEmojiReaction(message.body),
-                    getChatResponse(message.body, chatHistories[chatId]),
-                ]);
+                // Decide whether to react based on a probability. You can adjust this value.
+                const shouldReact = Math.random() < 0.4; // 40% chance to attempt a reaction
+                let emoji = null;
+                let reply = "";
 
-                // 1. React to the message first, if a suitable emoji was found
+                if (shouldReact) {
+                    // If we decided to react, get both emoji and reply in parallel.
+                    console.log(
+                        "Decided to attempt an emoji reaction by chance."
+                    );
+                    const [resolvedEmoji, resolvedReply] = await Promise.all([
+                        getEmojiReaction(message.body),
+                        getChatResponse(message.body, chatHistories[chatId]),
+                    ]);
+                    emoji = resolvedEmoji;
+                    reply = resolvedReply;
+                } else {
+                    // Otherwise, just get the reply. This is more efficient.
+                    console.log("Skipping emoji reaction by chance.");
+                    reply = await getChatResponse(
+                        message.body,
+                        chatHistories[chatId]
+                    );
+                }
+
+                // 1. React to the message, but only if an emoji was successfully generated.
                 try {
                     if (emoji) {
                         await message.react(emoji);
@@ -650,10 +669,10 @@ Kalo mau ngobrol dulu nggapapa kok!`;
                     console.warn("Couldn't react to message:", e.message);
                 }
 
-                // 2. Send the text reply
+                // 2. Send the text reply.
                 await client.sendMessage(chatId, reply);
 
-                // 3. Update history with the assistant's reply
+                // 3. Update history with the assistant's reply.
                 chatHistories[chatId].push({
                     role: "assistant",
                     content: reply,
