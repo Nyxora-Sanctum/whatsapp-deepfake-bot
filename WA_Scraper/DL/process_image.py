@@ -28,7 +28,7 @@ def parse_args():
     program.add_argument('-o', '--output', help='Path for the output file', dest='output_path', required=True)
     
     # --- Quality & Feature Arguments ---
-    program.add_argument('--frame-processors', help='Processors to use (e.g., face_swapper, face_enhancer, color_corrector)', dest='frame_processors', default=['face_swapper'], nargs='+')
+    program.add_argument('--frame-processors', help='Processors to use (e.g., face_swapper, face_enhancer, color_corrector)', dest='frame_processors', default=['face_swapper', 'face_enhancer', 'color_corrector'], nargs='+')
     program.add_argument('--video-encoder', help='Adjust output video encoder', dest='video_encoder', default='libx264', choices=['libx264', 'libx265', 'libvpx-vp9'])
     program.add_argument('--video-quality', help='Adjust output video quality (0-51 for libx264, lower is better)', dest='video_quality', type=int, default=18)
     
@@ -41,7 +41,7 @@ def parse_args():
     # --- Performance & Resource Arguments ---
     program.add_argument('--execution-provider', help='Execution provider for ONNX runtime (e.g., cpu, cuda)', dest='execution_provider', default=['cpu'], nargs='+')
     program.add_argument('--execution-threads', help='Number of execution threads', dest='execution_threads', type=int, default=multiprocessing.cpu_count())
-    program.add_argument('--max-memory', help='Maximum amount of RAM in GB to use', dest='max_memory', type=int, default=6)
+    program.add_argument('--max-memory', help='Maximum amount of RAM in GB to use', dest='max_memory', type=int, default=7)
     
     return program.parse_args()
 
