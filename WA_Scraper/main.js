@@ -189,7 +189,6 @@ async function runPythonScript(chatId, options) {
         }`;
         const outputAssetPath = path.join(tempDir, outputFilename);
 
-        // --- Build arguments based on user choices ---
         const args = [
             pythonScriptPath,
             "--source",
@@ -319,8 +318,6 @@ async function runPythonScript(chatId, options) {
 
 // --- WhatsApp Client Event Handlers ---
 
-// --- WhatsApp Client Event Handlers ---
-
 client.on("ready", () => {
     console.log("Client is ready! 🚀");
 });
@@ -359,7 +356,8 @@ client.on("message", async (message) => {
         return;
     }
 
-    // This block correctly handles the multi-step conversation
+    // --- THIS IS THE CORRECTED LOGIC BLOCK ---
+    // This block correctly handles the multi-step conversation.
     if (userStates[chatId]) {
         const currentState = userStates[chatId];
 
@@ -508,7 +506,7 @@ client.on("message", async (message) => {
         return;
     }
 
-    // If not in a process, determine intent
+    // This block runs if there is no active process for the user
     const intent = await getIntent(lowerCaseBody);
     console.log(`User: "${lowerCaseBody}" -> Intent: ${intent}`);
     chatHistories[chatId].push({
@@ -520,8 +518,8 @@ client.on("message", async (message) => {
     switch (intent) {
         case "IMAGE":
         case "VIDEO":
-            // This is the correct starting point. It sets the state and ASKS for the face.
-            // It does NOT call runPythonScript.
+            // This is the correct starting point. It sets the state to 'waiting_for_face'
+            // and asks the user for the first file. It does NOT call the Python script.
             userStates[chatId] = {
                 state: "waiting_for_face",
                 type: intent.toLowerCase(),
