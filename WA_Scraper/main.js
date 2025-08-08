@@ -129,8 +129,9 @@ async function getIntent(userMessage) {
  * @returns {Promise<string>} The bot's generated response.
  */
 async function getChatResponse(userMessage, history) {
+    // --- MODIFICATION: Updated system prompt for 'soft boy' persona ---
     const systemPrompt =
-        "You are a helpful and funny WhatsApp bot that talks like a close friend (homie). You use Indonesian Gen Z slang like 'njir', 'wkwk', 'goks', 'bjir', 'hell nah', 'ashiap', 'santuy'. Keep responses very short and casual, like texting a friend. Your main job is to chat, but you can also create images and videos if asked. Right now, your only task is to respond to the user's latest message based on the conversation history.";
+        "You are a friendly and helpful WhatsApp bot with a 'soft boy' personality. You speak like a kind Gen Z Indonesian. Use 'aku' for yourself and 'kamu' for the user. Absolutely NEVER use 'lo' or 'gue'. Your vocabulary includes soft, modern slang like 'gemes', 'lucu banget', 'ih', 'hehe', 'wkwk', 'santuy', 'semangat ya', 'gapapa kok'. Keep your responses short, sweet, and conversational, like you're texting a close friend. Your main job is to chat, but you can also create images and videos if asked. Right now, your only task is to respond to the user's latest message based on the conversation history.";
 
     const messages = [
         { role: "system", content: systemPrompt },
@@ -150,12 +151,12 @@ async function getChatResponse(userMessage, history) {
 
         if (response.status !== "200") {
             console.error("Azure AI Error:", response.body.error);
-            return "Waduh, AI gua lagi nge-lag. Sori, bro.";
+            return "Aduh, AI aku lagi error nih. Maaf yaa :(";
         }
         return response.body.choices[0].message.content;
     } catch (err) {
         console.error("The chat response encountered an error:", err);
-        return "Gua lagi puyeng, ntar lagi dah ngobrolnya.";
+        return "Hehe, aku lagi pusing. Nanti kita ngobrol lagi yaa.";
     }
 }
 
@@ -461,6 +462,7 @@ Kalo mau ngobrol, ya ngobrol aja. Gasss!
         timestamp: now,
     });
 
+    // --- MODIFICATION: Added emoji reactions and adjusted prompts ---
     switch (intent) {
         case "IMAGE":
             userStates[chatId] = {
@@ -471,7 +473,7 @@ Kalo mau ngobrol, ya ngobrol aja. Gasss!
             };
             client.sendMessage(
                 chatId,
-                "Ashiap, kita eksekusi gambarnya. Siniin dulu satu foto muka lo yang jelas, no kaleng-kaleng."
+                "Oke siap, kita buatin gambarnya. Kirimin aku satu foto muka kamu yang jelas yaa, biar hasilnya bagus."
             );
             break;
 
@@ -484,13 +486,28 @@ Kalo mau ngobrol, ya ngobrol aja. Gasss!
             };
             client.sendMessage(
                 chatId,
-                "Gaskeun bikin video. Kirim dulu satu foto muka yang jelas, bro."
+                "Asik, bikin video! Boleh minta satu foto muka kamu yang jelas dulu, hehe."
             );
             break;
 
         case "CHITCHAT":
         case "UNKNOWN": // Treat UNKNOWN as CHITCHAT for a more robust conversational experience
         default:
+            // --- MODIFICATION: Add a chance to react with an emoji for natural interaction ---
+            try {
+                // React to the user's message sometimes (e.g., 30% chance)
+                if (Math.random() < 0.3) {
+                    const softBoyEmojis = ["👍", "😊", "✨", "🥺", "❤️", "✅"];
+                    const randomEmoji =
+                        softBoyEmojis[
+                            Math.floor(Math.random() * softBoyEmojis.length)
+                        ];
+                    await message.react(randomEmoji);
+                }
+            } catch (e) {
+                console.warn("Couldn't react to message:", e.message);
+            }
+
             const reply = await getChatResponse(
                 message.body,
                 chatHistories[chatId]
