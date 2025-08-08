@@ -206,11 +206,12 @@ async function runPythonScript(
 
         console.log(`Calling Python script with args: ${args.join(" ")}`);
 
-        // *** CHANGE #1: Define the full path to the Python executable in your virtual environment ***
+        // *** THIS IS THE CRUCIAL FIX ***
+        // We define the full, absolute path to the Python executable in your virtual environment.
         const pythonExecutable =
             "/home/azureuser/whatsapp-deepfake-bot/new_env/bin/python3";
 
-        // *** CHANGE #2: Use the full path in the spawn command ***
+        // We use that specific executable to run the script.
         const pythonProcess = spawn(pythonExecutable, args, { cwd: scriptDir });
 
         pythonProcess.stdout.on("data", (data) => {
@@ -223,8 +224,6 @@ async function runPythonScript(
 
         pythonProcess.on("close", async (code) => {
             console.log(`Python script finished with code ${code}`);
-
-            // ... (the rest of your function remains the same)
 
             try {
                 if (fs.existsSync(sourceImagePath))
